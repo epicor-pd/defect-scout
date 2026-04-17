@@ -54,7 +54,7 @@
           <StackPanel Spacing="8" DataContext="{Binding SelectedEnvironment}">
             <TextBlock Text="Environment Settings" FontWeight="SemiBold" FontSize="14"/>
 
-            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto"
+            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto"
                   HorizontalAlignment="Stretch">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="Friendly Name" VerticalAlignment="Center" Margin="0,6,0,0"/>
               <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name}" Margin="0,4,0,2"/>
@@ -65,15 +65,18 @@
               <TextBlock Grid.Row="2" Grid.Column="0" Text="Web URL" VerticalAlignment="Center" Margin="0,6,0,0"/>
               <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding WebUrl}" Margin="0,4,0,2"/>
 
-              <TextBlock Grid.Row="3" Grid.Column="0" Text="Username" VerticalAlignment="Center" Margin="0,6,0,0"/>
-              <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Username}" Margin="0,4,0,2"/>
+              <TextBlock Grid.Row="3" Grid.Column="0" Text="REST API URL" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding RestApiBaseUrl}" Margin="0,4,0,2"/>
 
-              <TextBlock Grid.Row="4" Grid.Column="0" Text="Password" VerticalAlignment="Center" Margin="0,6,0,0"/>
-              <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Password}"
+              <TextBlock Grid.Row="4" Grid.Column="0" Text="Username" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Username}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="5" Grid.Column="0" Text="Password" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Password}"
                        PasswordChar="●" Margin="0,4,0,2"/>
 
-              <TextBlock Grid.Row="5" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Margin="0,6,0,0"/>
-              <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding ApiKey}"
+              <TextBlock Grid.Row="6" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding ApiKey}"
                        Margin="0,4,0,2"/>
             </Grid>
           </StackPanel>
