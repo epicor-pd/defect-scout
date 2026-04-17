@@ -1,0 +1,134 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             x:Class="DefectScout.App.Views.Pages.WelcomeView"
+             x:DataType="vm:WelcomeViewModel">
+
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+    <StackPanel Spacing="24" Margin="40,32">
+
+      <!-- Hero header -->
+      <StackPanel Spacing="6">
+        <TextBlock Text="DefectScout" FontSize="32" FontWeight="Bold" Foreground="#0078D4"/>
+        <TextBlock Text="Automated defect reproduction across ERP environments"
+                   FontSize="14" Foreground="#555"/>
+      </StackPanel>
+
+      <!-- Before you begin -->
+      <Border Background="#F7F9FC" CornerRadius="8" Padding="20"
+              BorderBrush="#D0D0D0" BorderThickness="1">
+        <StackPanel Spacing="14">
+          <TextBlock Text="Before You Begin" FontSize="16" FontWeight="SemiBold"/>
+          <TextBlock Text="Ensure the following tools are installed on your machine. DefectScout invokes them at runtime."
+                     TextWrapping="Wrap" Foreground="#444" FontSize="13"/>
+
+          <!-- Step 1 -->
+          <Border Background="White" CornerRadius="6" Padding="14,10"
+                  BorderBrush="#E0E0E0" BorderThickness="1">
+            <StackPanel Spacing="4">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="1" FontWeight="Bold" Foreground="#0078D4" Width="18"/>
+                <TextBlock Text="Node.js (v18+) and npm" FontWeight="SemiBold"/>
+              </StackPanel>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Download from nodejs.org and install. Verify with: node --version  |  npm --version
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+          <!-- Step 2 -->
+          <Border Background="White" CornerRadius="6" Padding="14,10"
+                  BorderBrush="#E0E0E0" BorderThickness="1">
+            <StackPanel Spacing="4">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="2" FontWeight="Bold" Foreground="#0078D4" Width="18"/>
+                <TextBlock Text="playwright-cli  (@playwright/cli)" FontWeight="SemiBold"/>
+              </StackPanel>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Install globally via npm:  npm install -g @playwright/cli@latest
+              </TextBlock>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Verify with:  playwright-cli --version
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+          <!-- Step 3 -->
+          <Border Background="White" CornerRadius="6" Padding="14,10"
+                  BorderBrush="#E0E0E0" BorderThickness="1">
+            <StackPanel Spacing="4">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="3" FontWeight="Bold" Foreground="#0078D4" Width="18"/>
+                <TextBlock Text="GitHub Copilot CLI" FontWeight="SemiBold"/>
+              </StackPanel>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Install via npm:  npm install -g @githubnext/github-copilot-cli
+              </TextBlock>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Then authenticate:  copilot auth
+              </TextBlock>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                Verify with:  copilot version
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+          <!-- Step 4 -->
+          <Border Background="White" CornerRadius="6" Padding="14,10"
+                  BorderBrush="#E0E0E0" BorderThickness="1">
+            <StackPanel Spacing="4">
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <TextBlock Text="4" FontWeight="Bold" Foreground="#0078D4" Width="18"/>
+                <TextBlock Text="Chromium browser (via playwright-cli)" FontWeight="SemiBold"/>
+              </StackPanel>
+              <TextBlock Margin="26,0,0,0" Foreground="#555" FontSize="12" TextWrapping="Wrap">
+                After installing playwright-cli, run:  playwright-cli install chromium
+              </TextBlock>
+            </StackPanel>
+          </Border>
+
+        </StackPanel>
+      </Border>
+
+      <!-- Status message (e.g. import errors) -->
+      <TextBlock Text="{Binding StatusMessage}"
+                 IsVisible="{Binding StatusMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                 Foreground="#C00" TextWrapping="Wrap" FontSize="13"/>
+
+      <!-- Action buttons -->
+      <StackPanel Spacing="8">
+        <TextBlock Text="Get started:" FontWeight="SemiBold" FontSize="13" Foreground="#333"/>
+        <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,4">
+
+          <!-- Run Tests shortcut — only shown when a usable config is already saved -->
+          <Button Content="▶  Run Tests"
+                  Command="{Binding RunTestsCommand}"
+                  Background="#107C10" Foreground="White"
+                  FontSize="14" FontWeight="SemiBold" CornerRadius="6" Padding="16,10"
+                  IsVisible="{Binding CanRunTests}"
+                  ToolTip.Tip="Jump straight to ticket input using the saved config"/>
+
+          <Button Content="✏️  Open Config"
+                  Command="{Binding OpenConfigCommand}"
+                  Background="#0078D4" Foreground="White"
+                  FontSize="14" CornerRadius="6" Padding="16,10"
+                  ToolTip.Tip="Open the app-local config in the editor to view or change environments"/>
+
+          <Button Content="📂  Import Config File"
+                  Command="{Binding ImportConfigCommand}"
+                  CommandParameter="{Binding $parent[Window].StorageProvider}"
+                  Background="#5C2D91" Foreground="White"
+                  FontSize="14" CornerRadius="6" Padding="16,10"
+                  ToolTip.Tip="Pick an external defect-scout-config.json — its contents will be copied into the app config and opened for review"/>
+
+          <Button Content="➕  Create New Config"
+                  Command="{Binding CreateNewConfigCommand}"
+                  Background="#444" Foreground="White"
+                  FontSize="14" CornerRadius="6" Padding="16,10"
+                  ToolTip.Tip="Open the config editor to build a new config from scratch"/>
+        </StackPanel>
+      </StackPanel>
+
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

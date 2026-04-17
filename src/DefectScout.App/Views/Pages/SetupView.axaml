@@ -1,0 +1,132 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             xmlns:models="using:DefectScout.Core.Models"
+             x:Class="DefectScout.App.Views.Pages.SetupView"
+             x:DataType="vm:SetupViewModel">
+
+  <Grid ColumnDefinitions="300,*" RowDefinitions="Auto,*,Auto" Margin="16">
+
+    <!-- Left: environment list -->
+    <StackPanel Grid.Column="0" Grid.RowSpan="3" Margin="0,0,12,0" Spacing="8">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="Environments" FontSize="16" FontWeight="SemiBold"
+                   VerticalAlignment="Center"/>
+        <Button Content="+" Command="{Binding AddEnvironmentCommand}"
+                Background="#0078D4" Foreground="White" CornerRadius="4"
+                Padding="8,4" ToolTip.Tip="Add environment"/>
+      </StackPanel>
+
+      <ListBox ItemsSource="{Binding Environments}"
+               SelectedItem="{Binding SelectedEnvironment}"
+               Background="White" BorderBrush="#D0D0D0" BorderThickness="1"
+               CornerRadius="6" MinHeight="200">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="models:KineticEnvironment">
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="4">
+              <CheckBox IsChecked="{Binding Enabled}"
+                        ToolTip.Tip="Enable this environment for testing"/>
+              <StackPanel>
+                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                <TextBlock Text="{Binding Version}" FontSize="11" Opacity="0.6"/>
+              </StackPanel>
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+
+      <Button Content="Remove Selected"
+              Command="{Binding RemoveEnvironmentCommand}"
+              CommandParameter="{Binding SelectedEnvironment}"
+              Background="#D13438" Foreground="White" CornerRadius="4"
+              Padding="8,6" HorizontalAlignment="Stretch"
+              IsEnabled="{Binding SelectedEnvironment, Converter={x:Static ObjectConverters.IsNotNull}}"/>
+    </StackPanel>
+
+    <!-- Top right: environment detail editor -->
+    <ScrollViewer Grid.Column="1" Grid.Row="0" Grid.RowSpan="2">
+      <StackPanel Spacing="10">
+
+        <!-- Environment detail (shown when one is selected) -->
+        <Border IsVisible="{Binding SelectedEnvironment, Converter={x:Static ObjectConverters.IsNotNull}}"
+                Background="#F7F9FC" CornerRadius="8" Padding="16"
+                BorderBrush="#D0D0D0" BorderThickness="1">
+          <StackPanel Spacing="8" DataContext="{Binding SelectedEnvironment}">
+            <TextBlock Text="Environment Settings" FontWeight="SemiBold" FontSize="14"/>
+
+            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto"
+                  HorizontalAlignment="Stretch">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="Friendly Name" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="Version" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Version}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="2" Grid.Column="0" Text="Web URL" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding WebUrl}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="3" Grid.Column="0" Text="Username" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Username}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="4" Grid.Column="0" Text="Password" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding Password}"
+                       PasswordChar="●" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="5" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding ApiKey}"
+                       Margin="0,4,0,2"/>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <!-- Global paths -->
+        <Border Background="#F7F9FC" CornerRadius="8" Padding="16"
+                BorderBrush="#D0D0D0" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <TextBlock Text="Global Settings" FontWeight="SemiBold" FontSize="14"/>
+
+            <TextBlock Text="Screenshot Directory"/>
+            <TextBox Text="{Binding ScreenshotBaseDir}"/>
+
+            <TextBlock Text="Report Directory" Margin="0,4,0,0"/>
+            <TextBox Text="{Binding ReportDir}"/>
+
+            <Separator Margin="0,8"/>
+
+            <TextBlock Text="Playwright Options" FontWeight="SemiBold"/>
+            <CheckBox IsChecked="{Binding PlaywrightHeadless}" Content="Headless (no visible browser)"/>
+            <CheckBox IsChecked="{Binding ScreenshotOnStep}" Content="Screenshot on every step"/>
+            <CheckBox IsChecked="{Binding ScreenshotOnFailure}" Content="Screenshot on failure"/>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Timeout (ms)" VerticalAlignment="Center"/>
+              <NumericUpDown Value="{Binding Timeout}" Minimum="5000" Maximum="120000"
+                             Increment="5000" FormatString="N0" Width="120"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- Bottom buttons -->
+    <StackPanel Grid.Column="1" Grid.Row="2" Orientation="Horizontal" Spacing="12" Margin="0,12,0,0">
+      <Button Content="← Back" Command="{Binding GoBackCommand}"
+              CornerRadius="4" Padding="12,8"/>
+
+      <Button Content="💾  Save Config"
+              Command="{Binding SaveCommand}"
+              Background="#107C10" Foreground="White"
+              CornerRadius="4" Padding="12,8"
+              IsEnabled="{Binding !IsSaving}"/>
+
+      <ProgressBar IsIndeterminate="True" Width="80" Height="4"
+                   VerticalAlignment="Center" IsVisible="{Binding IsSaving}"/>
+
+      <TextBlock Text="{Binding SaveResultMessage}"
+                 Foreground="{Binding SaveResultColor}" VerticalAlignment="Center"
+                 IsVisible="{Binding SaveResultMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+    </StackPanel>
+
+  </Grid>
+</UserControl>

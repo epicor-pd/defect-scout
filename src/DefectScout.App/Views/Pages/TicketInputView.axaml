@@ -1,0 +1,119 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             x:Class="DefectScout.App.Views.Pages.TicketInputView"
+             x:DataType="vm:TicketInputViewModel">
+
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24,20">
+
+    <!-- Header -->
+    <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,16">
+      <TextBlock Text="Enter Ticket Details" FontSize="20" FontWeight="SemiBold"/>
+      <TextBlock FontSize="13" Foreground="#555">
+        <Run Text="Will test across"/>
+        <Run Text="{Binding EnabledEnvironmentCount}" FontWeight="SemiBold"/>
+        <Run Text="environment(s)."/>
+      </TextBlock>
+    </StackPanel>
+
+    <!-- Main input area -->
+    <Border Grid.Row="1" Background="#F7F9FC" CornerRadius="8" Padding="16"
+            BorderBrush="#D0D0D0" BorderThickness="1"
+            IsVisible="{Binding !IsExtracting}">
+      <StackPanel Spacing="12">
+
+        <!-- File browser (primary source — takes priority) -->
+        <Border Background="White" CornerRadius="6" Padding="12"
+                BorderBrush="#C8D8E8" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <TextBlock Text="📄" FontSize="14" VerticalAlignment="Center"/>
+              <TextBlock Text="Ticket Export File" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <Border CornerRadius="6" Padding="5,2" Background="#E8F4FD">
+                <TextBlock Text="takes priority" FontSize="10" Foreground="#0078D4"/>
+              </Border>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="📎  Browse…"
+                      Command="{Binding BrowseTicketFileCommand}"
+                      CommandParameter="{Binding $parent[Window].StorageProvider}"
+                      Background="#0078D4" Foreground="White"
+                      CornerRadius="4" Padding="10,6"/>
+              <Border CornerRadius="4" Padding="8,4" Background="#EEF7EE"
+                      BorderBrush="#C8E6C9" BorderThickness="1"
+                      IsVisible="{Binding TicketFilePath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <TextBlock Text="{Binding TicketFilePath}" Foreground="#107C10"
+                           FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+              </Border>
+              <TextBlock Text="No file selected" Foreground="#999" FontSize="12"
+                         VerticalAlignment="Center"
+                         IsVisible="{Binding TicketFilePath, Converter={x:Static StringConverters.IsNullOrEmpty}}"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- Divider -->
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Separator HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+          <TextBlock Text="and / or" Foreground="#999" FontSize="12" VerticalAlignment="Center"/>
+          <Separator HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+        </StackPanel>
+
+        <!-- Custom reproduction steps (supplementary) -->
+        <StackPanel Spacing="6">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Custom Reproduction Steps" FontWeight="SemiBold"/>
+            <Border CornerRadius="6" Padding="5,2" Background="#FFF8E1">
+              <TextBlock Text="optional when file selected" FontSize="10" Foreground="#856404"/>
+            </Border>
+          </StackPanel>
+          <TextBox Text="{Binding TicketText}"
+                   AcceptsReturn="True" TextWrapping="Wrap"
+                   MinHeight="140"
+                   Watermark="Paste the ticket description, steps to reproduce, or any additional context here. If a file is selected above, this text is used as a supplement."
+                   FontFamily="Cascadia Code, Consolas, Courier New"
+                   FontSize="13"/>
+        </StackPanel>
+
+        <!-- Error message -->
+        <TextBlock Text="{Binding ErrorMessage}"
+                   Foreground="#D13438" TextWrapping="Wrap"
+                   IsVisible="{Binding ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+      </StackPanel>
+    </Border>
+
+    <!-- Extraction log (shown while extracting) -->
+    <Border Grid.Row="1" IsVisible="{Binding IsExtracting}"
+            Background="#1A1A2E" CornerRadius="8" Margin="0"
+            BorderBrush="#555" BorderThickness="1">
+      <Grid RowDefinitions="Auto,*">
+        <StackPanel Orientation="Horizontal" Spacing="8" Margin="12,8">
+          <ProgressBar IsIndeterminate="True" Width="100" Height="4" VerticalAlignment="Center"/>
+          <TextBlock Text="Copilot is extracting steps…" Foreground="#AAD8FF"
+                     VerticalAlignment="Center" FontWeight="SemiBold"/>
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" Margin="4">
+          <TextBlock Text="{Binding ExtractionLog}"
+                     Foreground="#D0FFD0"
+                     FontFamily="Cascadia Code, Consolas, Courier New"
+                     FontSize="12" TextWrapping="Wrap" Margin="8"/>
+        </ScrollViewer>
+      </Grid>
+    </Border>
+
+    <!-- Bottom buttons -->
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="12" Margin="0,16,0,0">
+      <Button Content="← Back" Command="{Binding GoBackCommand}"
+              CornerRadius="4" Padding="12,8"
+              IsEnabled="{Binding !IsExtracting}"/>
+
+      <Button Content="🔍  Extract Steps with Copilot"
+              Command="{Binding ExtractStepsCommand}"
+              Background="#0078D4" Foreground="White"
+              FontSize="14" CornerRadius="6" Padding="16,10"
+              IsEnabled="{Binding !IsExtracting}"/>
+    </StackPanel>
+
+  </Grid>
+</UserControl>

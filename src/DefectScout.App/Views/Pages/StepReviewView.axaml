@@ -1,0 +1,152 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             xmlns:models="using:DefectScout.Core.Models"
+             x:Class="DefectScout.App.Views.Pages.StepReviewView"
+             x:DataType="vm:StepReviewViewModel">
+
+  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="*,320" Margin="16,12">
+
+    <!-- Header -->
+    <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Spacing="2" Margin="0,0,0,12">
+      <TextBlock Text="Review Test Steps" FontSize="20" FontWeight="SemiBold"/>
+      <StackPanel Orientation="Horizontal" Spacing="12">
+        <TextBlock Text="{Binding Summary}" Foreground="#555" FontSize="13" TextWrapping="Wrap"/>
+      </StackPanel>
+      <TextBlock Foreground="#0078D4" FontSize="12">
+        <Run Text="Module:"/>
+        <Run Text="{Binding AffectedModule}" FontWeight="SemiBold"/>
+      </TextBlock>
+    </StackPanel>
+
+    <!-- Steps list -->
+    <Border Grid.Row="1" Grid.Column="0" BorderBrush="#D0D0D0" BorderThickness="1"
+            CornerRadius="6" Margin="0,0,8,0">
+      <ScrollViewer>
+        <ItemsControl ItemsSource="{Binding Steps}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:StepItemViewModel">
+              <Border Padding="10,8" Margin="2"
+                      Background="White" CornerRadius="4"
+                      BorderBrush="#E0E0E0" BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="28,*,Auto">
+                  <!-- Step number -->
+                  <Border Grid.Column="0" Width="24" Height="24"
+                          Background="#0078D4" CornerRadius="12"
+                          VerticalAlignment="Top" Margin="0,2,0,0">
+                    <TextBlock Text="{Binding StepNumber}"
+                               Foreground="White" FontSize="11" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                  </Border>
+
+                  <!-- Step details -->
+                  <StackPanel Grid.Column="1" Spacing="2" Margin="8,0">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <Border Background="#E8F4FD" CornerRadius="3" Padding="4,2">
+                        <TextBlock Text="{Binding Action}" Foreground="#005A9E"
+                                   FontSize="11" FontWeight="SemiBold"
+                                   FontFamily="Cascadia Code, Consolas"/>
+                      </Border>
+                      <TextBlock Text="{Binding Target}" FontWeight="SemiBold"
+                                 VerticalAlignment="Center"/>
+                      <Border Background="#FFF0CC" CornerRadius="3" Padding="4,2"
+                              IsVisible="{Binding IsDiscriminatingStep}">
+                        <TextBlock Text="🔑 KEY STEP" FontSize="10" Foreground="#6B4200"/>
+                      </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Value}" Foreground="#555" FontSize="12"
+                               IsVisible="{Binding Value, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                    <TextBlock FontSize="12" Foreground="#336600"
+                               IsVisible="{Binding Expected, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                      <Run Text="Expected: " FontWeight="SemiBold"/>
+                      <Run Text="{Binding Expected}"/>
+                    </TextBlock>
+                  </StackPanel>
+
+                  <!-- Action buttons -->
+                  <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="2">
+                    <Button Content="✏" ToolTip.Tip="Edit step"
+                            Command="{Binding EditStepCommand}"
+                            CommandParameter="{Binding}"
+                            Background="Transparent" Padding="4"/>
+                    <Button Content="↑" ToolTip.Tip="Move up"
+                            Command="{Binding MoveStepUpCommand}"
+                            CommandParameter="{Binding}"
+                            Background="Transparent" Padding="4"/>
+                    <Button Content="↓" ToolTip.Tip="Move down"
+                            Command="{Binding MoveStepDownCommand}"
+                            CommandParameter="{Binding}"
+                            Background="Transparent" Padding="4"/>
+                    <Button Content="🗑" ToolTip.Tip="Delete step"
+                            Command="{Binding DeleteStepCommand}"
+                            CommandParameter="{Binding}"
+                            Background="Transparent" Foreground="#D13438" Padding="4"/>
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+
+    <!-- Right panel: step editor -->
+    <Border Grid.Row="1" Grid.Column="1"
+            IsVisible="{Binding IsEditing}"
+            Background="#F7F9FC" CornerRadius="8" Padding="16"
+            BorderBrush="#D0D0D0" BorderThickness="1">
+      <StackPanel Spacing="8">
+        <TextBlock Text="Edit Step" FontWeight="SemiBold" FontSize="14"/>
+
+        <TextBlock Text="Action" FontSize="12"/>
+        <ComboBox SelectedItem="{Binding EditAction}" HorizontalAlignment="Stretch"
+                  ItemsSource="{x:Static vm:StepReviewViewModel.ActionTypes}"/>
+
+        <TextBlock Text="Target" FontSize="12"/>
+        <TextBox Text="{Binding EditTarget}"/>
+
+        <TextBlock Text="Value (optional)" FontSize="12"/>
+        <TextBox Text="{Binding EditValue}"/>
+
+        <TextBlock Text="Expected outcome" FontSize="12"/>
+        <TextBox Text="{Binding EditExpected}" AcceptsReturn="True" MinHeight="60"/>
+
+        <CheckBox IsChecked="{Binding EditIsDiscriminating}"
+                  Content="Key discriminating step"/>
+
+        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+          <Button Content="✔ Save" Command="{Binding SaveStepEditCommand}"
+                  Background="#107C10" Foreground="White" CornerRadius="4" Padding="10,6"/>
+          <Button Content="✖ Cancel" Command="{Binding CancelStepEditCommand}"
+                  CornerRadius="4" Padding="10,6"/>
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <!-- Empty right panel hint -->
+    <Border Grid.Row="1" Grid.Column="1"
+            IsVisible="{Binding !IsEditing}"
+            Background="#F7F9FC" CornerRadius="8" Padding="16"
+            BorderBrush="#E0E0E0" BorderThickness="1">
+      <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+        <TextBlock Text="✏" FontSize="32" HorizontalAlignment="Center"/>
+        <TextBlock Text="Click a step to edit it" Foreground="#888"
+                   HorizontalAlignment="Center"/>
+        <Button Content="+ Add Step" Command="{Binding AddStepCommand}"
+                CornerRadius="4" Padding="12,6" HorizontalAlignment="Center"/>
+      </StackPanel>
+    </Border>
+
+    <!-- Bottom buttons -->
+    <StackPanel Grid.Row="2" Grid.ColumnSpan="2"
+                Orientation="Horizontal" Spacing="12" Margin="0,12,0,0">
+      <Button Content="← Back" Command="{Binding GoBackCommand}"
+              CornerRadius="4" Padding="12,8"/>
+      <Button Content="▶  Confirm &amp; Run Tests"
+              Command="{Binding ConfirmCommand}"
+              Background="#0078D4" Foreground="White"
+              FontSize="14" CornerRadius="6" Padding="16,10"/>
+    </StackPanel>
+
+  </Grid>
+</UserControl>

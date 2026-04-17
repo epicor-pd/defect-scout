@@ -1,0 +1,128 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             xmlns:conv="using:DefectScout.App.Converters"
+             x:Class="DefectScout.App.Views.Pages.RunningView"
+             x:DataType="vm:RunningViewModel">
+
+  <UserControl.Resources>
+    <conv:PathToBitmapConverter x:Key="PathToBitmap"/>
+  </UserControl.Resources>
+
+  <Grid RowDefinitions="Auto,*,Auto" Margin="16,12">
+
+    <!-- Header -->
+    <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,12">
+      <StackPanel Orientation="Horizontal" Spacing="12">
+        <TextBlock Text="Running Tests" FontSize="20" FontWeight="SemiBold"/>
+        <ProgressBar IsIndeterminate="True" Width="100" Height="6"
+                     VerticalAlignment="Center"
+                     IsVisible="{Binding IsRunning}"/>
+        <!-- Dispatch mode badge -->
+        <Border CornerRadius="10" Padding="8,3"
+                Background="#1A1A2E"
+                IsVisible="{Binding DispatchBadge, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+          <TextBlock Text="{Binding DispatchBadge}" FontSize="11"
+                     Foreground="#90D4FF" FontWeight="SemiBold"/>
+        </Border>
+      </StackPanel>
+      <TextBlock Text="{Binding OverallStatus}" Foreground="#555" FontSize="13"
+                 TextWrapping="Wrap"/>
+    </StackPanel>
+
+    <!-- Environment cards grid -->
+    <ScrollViewer Grid.Row="1">
+      <ItemsControl ItemsSource="{Binding EnvProgresses}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel Orientation="Horizontal"/>
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:ProgressCardViewModel">
+            <Border Width="320" Margin="6" CornerRadius="8" Padding="14"
+                    Background="White"
+                    BorderBrush="#D0D0D0" BorderThickness="1"
+                    BoxShadow="0 2 6 0 #20000000">
+              <StackPanel Spacing="6">
+
+                <!-- Env name + status badge -->
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding EnvironmentName}"
+                             FontWeight="SemiBold" FontSize="14"
+                             VerticalAlignment="Center"/>
+                  <Border CornerRadius="10" Padding="6,2"
+                          Background="{Binding StatusColor}">
+                    <TextBlock Text="{Binding Status}" FontSize="11"
+                               Foreground="White" FontWeight="SemiBold"/>
+                  </Border>
+                  <!-- Verdict icon shown when Done or Error -->
+                  <TextBlock Text="{Binding VerdictIcon}" FontSize="14"
+                             VerticalAlignment="Center"
+                             IsVisible="{Binding VerdictIcon, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+                  <!-- Fleet pending glyph while status is Queued -->
+                  <Border CornerRadius="8" Padding="5,2" Background="#FFF3E0"
+                          IsVisible="{Binding IsFleetMode}"
+                          ToolTip.Tip="Dispatched via /fleet — awaiting result file">
+                    <TextBlock Text="⚡ fleet" FontSize="10" Foreground="#B35900"
+                               FontWeight="SemiBold" VerticalAlignment="Center"/>
+                  </Border>
+                </StackPanel>
+
+                <!-- Progress bar -->
+                <ProgressBar Minimum="0"
+                             Maximum="{Binding TotalSteps}"
+                             Value="{Binding CurrentStep}"
+                             Height="6" CornerRadius="3"/>
+                <TextBlock FontSize="11" Foreground="#666">
+                  <Run Text="Step"/>
+                  <Run Text="{Binding CurrentStep}"/>
+                  <Run Text="/"/>
+                  <Run Text="{Binding TotalSteps}"/>
+                  <Run Text=" — "/>
+                  <Run Text="{Binding StepDescription}"/>
+                </TextBlock>
+
+                <!-- Latest screenshot thumbnail -->
+                <Border IsVisible="{Binding LatestScreenshotPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                        CornerRadius="4" ClipToBounds="True" Height="90"
+                        Background="#F0F0F0">
+                  <Image Source="{Binding LatestScreenshotPath, Converter={StaticResource PathToBitmap}}"
+                         Stretch="UniformToFill"/>
+                </Border>
+
+                <!-- Log (last 6 lines) -->
+                <Border Background="#1A1A2E" CornerRadius="4" Padding="6"
+                        MaxHeight="80">
+                  <ScrollViewer>
+                    <ItemsControl ItemsSource="{Binding LogLines}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding}" Foreground="#D0FFD0"
+                                     FontFamily="Cascadia Code, Consolas"
+                                     FontSize="10" TextWrapping="Wrap"/>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                </Border>
+
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </ScrollViewer>
+
+    <!-- Complete message -->
+    <StackPanel Grid.Row="2" IsVisible="{Binding IsComplete}"
+                Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
+      <TextBlock Text="✅  " FontSize="18" VerticalAlignment="Center"/>
+      <TextBlock Text="{Binding OverallStatus}" FontSize="14" FontWeight="SemiBold"
+                 Foreground="#107C10" VerticalAlignment="Center"/>
+      <TextBlock Text="(Navigating to report…)" Foreground="#888" FontSize="12"
+                 VerticalAlignment="Center"/>
+    </StackPanel>
+
+  </Grid>
+</UserControl>

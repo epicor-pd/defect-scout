@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "description": "Defect Scout — multi-environment defect reproduction configuration. Add one entry per Kinetic server version to test. Set enabled=true to include an environment in fleet runs.",
+
+  "environments": [
+    {
+      "name": "Kinetic 2026.1 Dev",
+      "version": "2026.1",
+      "enabled": true,
+      "webUrl": "https://localhost/ERPCurrent/Apps/ERP/Home/",
+      "restApiBaseUrl": "https://localhost/ERPCurrent/api/v2/odata/EPIC06/",
+      "apiKey": "s9Es1RgUyKFu8hr6MXfJLGRaNzUUvwa4I6yKTFdl4R4B0",
+      "username": "manager",
+      "password": "Epicor123",
+      "company": "EPIC06",
+      "notes": "Local 2026.1 development instance. apiKey is used for REST API authentication; leave empty to fall back to Basic (username+password)."
+    },
+    {
+      "name": "Kinetic 2025.2 QA",
+      "version": "2025.2",
+      "enabled": false,
+      "webUrl": "2025.2 QA URL goes here",
+      "restApiBaseUrl": "2025.2 QA REST API base URL goes here",
+      "apiKey": "2025.2 QA API key goes here",
+      "username": "",
+      "password": "",
+      "company": "",
+      "notes": "Set enabled=true and fill in credentials. apiKey is the Kinetic REST API key; leave empty to use Basic auth."
+    },
+    {
+      "name": "Kinetic 2025.1 Staging",
+      "version": "2025.1",
+      "enabled": false,
+      "webUrl": "https://staging-server/ERP251/Apps/ERP/Home/",
+      "restApiBaseUrl": "https://staging-server/ERP251/api/v2/odata/EPIC06/",
+      "apiKey": "",
+      "username": "manager",
+      "password": "REPLACE_ME",
+      "company": "EPIC06",
+      "notes": "Set enabled=true and fill in credentials. apiKey is the Kinetic REST API key; leave empty to use Basic auth."
+    }
+  ],
+
+  "screenshotBaseDir": "",
+  "reportDir": "",
+  "logDir": "",
+
+  "playwright": {
+    "timeout": 30000,
+    "screenshotOnStep": true,
+    "screenshotOnFailure": true,
+    "headless": true,
+    "ignoreHttpsErrors": true,
+    "comment": "timeout in ms per playwright-cli action. screenshotOnStep=true takes a screenshot after every step. ignoreHttpsErrors=true bypasses self-signed / untrusted certificate warnings (NET::ERR_CERT_AUTHORITY_INVALID) — required for most Azure-hosted Kinetic dev/QA servers. UI steps use playwright-cli directly; API steps use Invoke-RestMethod with apiKey (or Basic auth fallback)."
+  }
+}

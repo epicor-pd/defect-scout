@@ -1,0 +1,76 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:DefectScout.App.ViewModels"
+             xmlns:models="using:DefectScout.Core.Models"
+             x:Class="DefectScout.App.Views.Pages.ReportView"
+             x:DataType="vm:ReportViewModel">
+
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="16,12">
+
+    <!-- Summary badge row -->
+    <StackPanel Grid.Row="0" Spacing="6" Margin="0,0,0,12">
+      <TextBlock Text="Test Report" FontSize="20" FontWeight="SemiBold"/>
+      <TextBlock Text="{Binding SummaryLine}" FontSize="13" FontWeight="SemiBold"
+                 Foreground="#0078D4"/>
+    </StackPanel>
+
+    <!-- Verdict mini-matrix -->
+    <ItemsControl Grid.Row="1" ItemsSource="{Binding Results}" Margin="0,0,0,12">
+      <ItemsControl.ItemsPanel>
+        <ItemsPanelTemplate>
+          <WrapPanel Orientation="Horizontal"/>
+        </ItemsPanelTemplate>
+      </ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate x:DataType="models:TestResult">
+          <Border Width="140" Margin="4" CornerRadius="8" Padding="10"
+                  Background="{Binding VerdictColor}"
+                  BoxShadow="0 2 4 0 #20000000">
+            <StackPanel Spacing="2">
+              <TextBlock Text="{Binding EnvironmentName}" FontWeight="SemiBold"
+                         Foreground="White" FontSize="12" TextWrapping="Wrap"/>
+              <TextBlock Text="{Binding Version}" Foreground="#DDEEFF" FontSize="11"/>
+              <TextBlock Text="{Binding Verdict}" FontWeight="Bold"
+                         Foreground="White" FontSize="13"/>
+            </StackPanel>
+          </Border>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+
+    <!-- Report content area — raw markdown displayed as legible text -->
+    <Border Grid.Row="2" CornerRadius="8" BorderBrush="#D0D0D0" BorderThickness="1"
+            ClipToBounds="True" Background="#FAFAFA">
+      <ScrollViewer Padding="4">
+        <TextBlock Text="{Binding ReportContent}" TextWrapping="Wrap"
+                   FontFamily="Cascadia Code, Consolas, Courier New" FontSize="12"
+                   Foreground="#222" Margin="12"/>
+      </ScrollViewer>
+    </Border>
+
+    <!-- Action buttons -->
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="12" Margin="0,12,0,0">
+      <Button Content="🌐  Open in Browser"
+              Command="{Binding OpenInBrowserCommand}"
+              CornerRadius="4" Padding="12,8"
+              IsEnabled="{Binding ReportPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+      <Button Content="📁  Open Report Folder"
+              Command="{Binding OpenFolderCommand}"
+              CornerRadius="4" Padding="12,8"
+              IsEnabled="{Binding ReportPath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"/>
+
+      <Separator Width="1" Margin="4,0"/>
+
+      <Button Content="🔁  Run Again (Same Ticket)"
+              Command="{Binding GoRunAgainCommand}"
+              Background="#0078D4" Foreground="White"
+              CornerRadius="4" Padding="12,8"/>
+
+      <Button Content="🏠  Start Over"
+              Command="{Binding GoStartOverCommand}"
+              CornerRadius="4" Padding="12,8"/>
+    </StackPanel>
+
+  </Grid>
+</UserControl>
