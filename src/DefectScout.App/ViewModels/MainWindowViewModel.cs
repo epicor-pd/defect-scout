@@ -152,6 +152,12 @@ public sealed partial class MainWindowViewModel : ObservableObject
         _log.Information("Run finished: {Count} results, reportPath={Path}", results.Count, reportPath);
         _lastResults = results;
         _lastReportPath = reportPath;
+
+        // Proactively kill any surviving node.exe descendants so file-system locks
+        // on the data folder (screenshots, reports, logs) are released immediately.
+        if (OperatingSystem.IsWindows())
+            ProcessGuard.KillDescendantNodeProcesses();
+
         NavigateToReport();
     }
 

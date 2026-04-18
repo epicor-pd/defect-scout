@@ -19,6 +19,12 @@ public partial class App : Application
         // incomplete version; find the first NVM-managed version that actually has node.exe.
         EnsureNodeOnPath();
 
+        // Register this process with a Windows Job Object so that all child
+        // processes (Copilot CLI / node.exe / Playwright) are killed automatically
+        // by the OS when the application exits — even if it crashes or is force-closed.
+        if (OperatingSystem.IsWindows())
+            ProcessGuard.Initialize();
+
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             // Compose services
@@ -43,7 +49,14 @@ public partial class App : Application
             mainVm.ConfigReady += cfg =>
                 AppLogger.Initialize(cfg.LogDir, LogEventLevel.Debug);
 
-            desktop.ShutdownRequested += (_, _) => AppLogger.CloseAndFlush();
+            desktop.ShutdownRequested += (_, _) =>
+            {
+                // Belt-and-suspenders: explicitly kill any surviving node.exe descendants
+                // before the Job Object handle closes, so the data folder is unlocked cleanly.
+                if (OperatingSystem.IsWindows())
+                    ProcessGuard.KillDescendantNodeProcesses();
+                AppLogger.CloseAndFlush();
+            };
         }
 
         base.OnFrameworkInitializationCompleted();
