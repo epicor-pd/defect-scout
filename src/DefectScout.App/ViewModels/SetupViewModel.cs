@@ -20,6 +20,8 @@ public sealed partial class SetupViewModel : ViewModelBase
     public event Action? Back;
     public event Action<DefectScoutConfig>? Saved;
 
+    private string _logDir = string.Empty;
+
     [ObservableProperty]
     private string _screenshotBaseDir = string.Empty;
 
@@ -66,6 +68,7 @@ public sealed partial class SetupViewModel : ViewModelBase
             var defaults = configService.CreateDefault();
             ScreenshotBaseDir = defaults.ScreenshotBaseDir;
             ReportDir = defaults.ReportDir;
+            _logDir = defaults.LogDir;
         }
     }
 
@@ -73,6 +76,9 @@ public sealed partial class SetupViewModel : ViewModelBase
     {
         ScreenshotBaseDir = cfg.ScreenshotBaseDir;
         ReportDir = cfg.ReportDir;
+        _logDir = string.IsNullOrEmpty(cfg.LogDir)
+            ? _configService.CreateDefault().LogDir
+            : cfg.LogDir;
         PlaywrightHeadless = cfg.Playwright.Headless;
         ScreenshotOnStep = cfg.Playwright.ScreenshotOnStep;
         ScreenshotOnFailure = cfg.Playwright.ScreenshotOnFailure;
@@ -151,6 +157,7 @@ public sealed partial class SetupViewModel : ViewModelBase
         Environments = [.. Environments],
         ScreenshotBaseDir = ScreenshotBaseDir,
         ReportDir = ReportDir,
+        LogDir = string.IsNullOrEmpty(_logDir) ? _configService.CreateDefault().LogDir : _logDir,
         Playwright = new PlaywrightOptions
         {
             Headless = PlaywrightHeadless,
