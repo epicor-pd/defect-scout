@@ -67,7 +67,7 @@ jobs:
         run: |
           for dir in artifacts/DefectScout-*/; do
             name=$(basename "$dir")
-            zip -r "artifacts/${name}.zip" "$dir"
+            (cd "$dir" && zip -r "../../artifacts/${name}.zip" .)
           done
 
       - name: Create GitHub Release
