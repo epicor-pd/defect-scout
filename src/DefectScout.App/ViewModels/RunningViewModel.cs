@@ -38,9 +38,9 @@ public sealed partial class RunningViewModel : ViewModelBase
     /// <summary>Displayed in the header badge. Empty until dispatch mode is known.</summary>
     public string DispatchBadge => DispatchMode switch
     {
-        "fleet"      => "⚡ Fleet (parallel)",
-        "sequential" => "▶ Sequential",
-        _            => "Probing...",
+        "fleet" or "parallel" => "⚡ Fleet (parallel)",
+        "sequential"          => "▶ Sequential",
+        _                     => "Probing...",
     };
 
     public ObservableCollection<ProgressCardViewModel> EnvProgresses { get; } = [];
@@ -123,11 +123,11 @@ public sealed partial class RunningViewModel : ViewModelBase
                     _log.Information("Dispatch mode: {Mode}", mode);
                     DispatchMode = mode;
                     OnPropertyChanged(nameof(DispatchBadge));
-                    OverallStatus = mode == "fleet"
+                    OverallStatus = mode is "fleet" or "parallel"
                         ? $"⚡ Fleet dispatched — {enabledEnvs.Count} environments running in parallel..."
                         : $"▶ Sequential — testing {enabledEnvs.Count} environments one at a time...";
 
-                    if (mode == "fleet")
+                    if (mode is "fleet" or "parallel")
                         foreach (var card in EnvProgresses)
                             card.IsFleetMode = true;
                 });
