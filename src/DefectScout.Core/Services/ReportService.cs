@@ -25,7 +25,7 @@ public sealed class ReportService : IReportService
             plan.Ticket, results.Count, reportDir);
         Directory.CreateDirectory(reportDir);
 
-        var md = BuildMarkdown(plan, results, screenshotBaseDir);
+        var md = BuildMarkdown(plan, results, screenshotBaseDir, reportDir);
 
         var mdPath   = Path.Combine(reportDir, $"{plan.Ticket}-report.md");
         var htmlPath = Path.Combine(reportDir, $"{plan.Ticket}-report.html");
@@ -45,7 +45,8 @@ public sealed class ReportService : IReportService
     private static string BuildMarkdown(
         StructuredTestPlan plan,
         IReadOnlyList<TestResult> results,
-        string screenshotBaseDir)
+        string screenshotBaseDir,
+        string reportDir)
     {
         var sb = new StringBuilder();
         var today = DateTime.Today.ToString("yyyy-MM-dd");
@@ -72,6 +73,7 @@ public sealed class ReportService : IReportService
         sb.AppendLine("| Environment | Version | Result | Screenshots |");
         sb.AppendLine("|-------------|---------|--------|-------------|");
 
+        var normalizedBase = screenshotBaseDir.Replace('\\', '/');
         foreach (var r in results)
         {
             var icon = r.IsReproduced ? "✅ REPRODUCED"
@@ -80,7 +82,7 @@ public sealed class ReportService : IReportService
 
             var ssLink = r.IsError
                 ? $"Error: {r.Error}"
-                : $"[View]({screenshotBaseDir}/{r.Version.Replace('.', '-')}/{plan.Ticket}/)";
+                : $"[View]({normalizedBase}/{r.Version.Replace('.', '-')}/{plan.Ticket}/)";
 
             sb.AppendLine($"| {r.EnvName} | {r.Version} | {icon} | {ssLink} |");
         }
@@ -226,7 +228,8 @@ public sealed class ReportService : IReportService
                 var stepNum = ExtractStepNumber(fileName);
                 var stepResult = r.StepResults.FirstOrDefault(s => s.StepNumber == stepNum);
                 var outcome = stepResult is null ? "–" : (stepResult.Passed ? "✅" : "❌");
-                sb.AppendLine($"| {stepNum} | {fileName} | {outcome} |");
+                var relativePath = Path.GetRelativePath(reportDir, ss).Replace('\\', '/');
+                sb.AppendLine($"| {stepNum} | ![{fileName}]({relativePath}) | {outcome} |");
             }
             sb.AppendLine();
         }
@@ -295,12 +298,27 @@ public sealed class ReportService : IReportService
     /// <summary>Wraps rendered HTML body in a minimal full-page HTML document.</summary>
     private static string WrapHtml(string markdownSource)
     {
-        // Convert markdown to HTML via a simple inline conversion
-        // (avoids a Markdig dependency in the Core project)
+        // Convert markdown line to HTML with inline formatting (bold, code, images, links)
+        static string ProcessInline(string text)
+        {
+            var h = System.Net.WebUtility.HtmlEncode(text);
+            // Images must be processed before links because ![](url) contains [](url)
+            h = System.Text.RegularExpressions.Regex.Replace(h,
+                @"!\[([^\]]*)\]\(([^)]+)\)",
+                "<img src=\"$2\" alt=\"$1\" style=\"max-width:100%;\"/>");
+            h = System.Text.RegularExpressions.Regex.Replace(h,
+                @"\[([^\]]+)\]\(([^)]+)\)",
+                "<a href=\"$2\">$1</a>");
+            h = System.Text.RegularExpressions.Regex.Replace(h, @"\*\*(.+?)\*\*", "<strong>$1</strong>");
+            h = System.Text.RegularExpressions.Regex.Replace(h, @"`(.+?)`", "<code>$1</code>");
+            return h;
+        }
+
         var lines = markdownSource.Split('\n');
         var body = new StringBuilder();
         bool inCodeBlock = false;
         bool inTable = false;
+        bool isTableHeader = false;
 
         foreach (var rawLine in lines)
         {
@@ -316,12 +334,16 @@ public sealed class ReportService : IReportService
 
             if (line.StartsWith("|"))
             {
-                if (!inTable) { inTable = true; body.AppendLine("<table>"); }
+                if (!inTable) { inTable = true; isTableHeader = true; body.AppendLine("<table>"); }
                 if (line.Replace("|", "").Replace("-", "").Replace(" ", "").Length == 0)
+                {
+                    isTableHeader = false;
                     continue; // separator row
+                }
                 var cells = line.Split('|').Skip(1).SkipLast(1).ToArray();
+                var tag = isTableHeader ? "th" : "td";
                 body.Append("<tr>");
-                foreach (var cell in cells) body.Append($"<td>{cell.Trim()}</td>");
+                foreach (var cell in cells) body.Append($"<{tag}>{ProcessInline(cell.Trim())}</{tag}>");
                 body.AppendLine("</tr>");
                 continue;
             }
@@ -335,13 +357,10 @@ public sealed class ReportService : IReportService
             if (line.StartsWith("## "))  { body.AppendLine($"<h2>{line[3..]}</h2>"); continue; }
             if (line.StartsWith("# "))   { body.AppendLine($"<h1>{line[2..]}</h1>"); continue; }
             if (line.StartsWith("---"))  { body.AppendLine("<hr/>"); continue; }
+            if (line.StartsWith("> "))   { body.AppendLine($"<blockquote>{ProcessInline(line[2..])}</blockquote>"); continue; }
             if (string.IsNullOrWhiteSpace(line)) { body.AppendLine("<br/>"); continue; }
 
-            // Inline bold/italic/code
-            var html = System.Net.WebUtility.HtmlEncode(line);
-            html = System.Text.RegularExpressions.Regex.Replace(html, @"\*\*(.+?)\*\*", "<strong>$1</strong>");
-            html = System.Text.RegularExpressions.Regex.Replace(html, @"`(.+?)`", "<code>$1</code>");
-            body.AppendLine($"<p>{html}</p>");
+            body.AppendLine($"<p>{ProcessInline(line)}</p>");
         }
         if (inTable) body.AppendLine("</table>");
 
@@ -356,6 +375,8 @@ public sealed class ReportService : IReportService
             pre  { background: #f4f4f4; padding: 12px; border-radius: 6px; overflow-x: auto; }
             hr   { border: none; border-top: 1px solid #ddd; margin: 16px 0; }
             strong { color: #111; }
+            blockquote { border-left: 4px solid #0078D4; margin: 8px 0; padding: 4px 12px; color: #555; background: #f0f6ff; }
+            img  { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; }
             """;
 
         var output = new StringBuilder();
