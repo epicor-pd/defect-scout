@@ -39,6 +39,7 @@ public sealed partial class RunningViewModel : ViewModelBase
     public string DispatchBadge => DispatchMode switch
     {
         "fleet" or "parallel" => "⚡ Fleet (parallel)",
+        "local-parallel"      => "Local Ollama (parallel)",
         "sequential"          => "▶ Sequential",
         _                     => "Probing...",
     };
@@ -61,7 +62,9 @@ public sealed partial class RunningViewModel : ViewModelBase
     {
         IsRunning = true;
         IsComplete = false;
-        OverallStatus = "Probing Copilot CLI...";
+        OverallStatus = _config.AgentRuntime.IsLocalOllama
+            ? "Preparing local Ollama agents..."
+            : "Probing Copilot CLI...";
         EnvProgresses.Clear();
 
         var enabledEnvs = _config.Environments.Where(e => e.Enabled).ToList();
@@ -123,14 +126,18 @@ public sealed partial class RunningViewModel : ViewModelBase
                     _log.Information("Dispatch mode: {Mode}", mode);
                     DispatchMode = mode;
                     OnPropertyChanged(nameof(DispatchBadge));
-                    OverallStatus = mode is "fleet" or "parallel"
-                        ? $"⚡ Fleet dispatched — {enabledEnvs.Count} environments running in parallel..."
-                        : $"▶ Sequential — testing {enabledEnvs.Count} environments one at a time...";
+                    OverallStatus = mode switch
+                    {
+                        "fleet" or "parallel" => $"⚡ Fleet dispatched — {enabledEnvs.Count} environments running in parallel...",
+                        "local-parallel" => $"Local Ollama dispatched — {enabledEnvs.Count} environment agent(s) running in parallel...",
+                        _ => $"▶ Sequential — testing {enabledEnvs.Count} environments one at a time...",
+                    };
 
-                    if (mode is "fleet" or "parallel")
+                    if (mode is "fleet" or "parallel" or "local-parallel")
                         foreach (var card in EnvProgresses)
                             card.IsFleetMode = true;
-                });
+                },
+                _config.AgentRuntime);
         }
         catch (Exception ex)
         {

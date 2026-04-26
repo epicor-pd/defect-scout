@@ -45,12 +45,24 @@
   "reportDir": "",
   "logDir": "",
 
+  "agentRuntime": {
+    "mode": "copilotSdk",
+    "ollamaEndpoint": "http://localhost:11434",
+    "stepExtractorModel": "gpt-oss:20b",
+    "envTesterModel": "qwen3.5:4b",
+    "maxConcurrentEnvTesters": 3,
+    "maxToolIterations": 80,
+    "ollamaContextTokens": 8192,
+    "ollamaMaxOutputTokens": 4096,
+    "ollamaThink": "low"
+  },
+
   "playwright": {
-    "timeout": 30000,
+    "timeout": 7200000,
     "screenshotOnStep": true,
     "screenshotOnFailure": true,
     "headless": true,
     "ignoreHttpsErrors": true,
-    "comment": "timeout in ms per playwright-cli action. screenshotOnStep=true takes a screenshot after every step. ignoreHttpsErrors=true bypasses self-signed / untrusted certificate warnings (NET::ERR_CERT_AUTHORITY_INVALID) — required for most Azure-hosted Kinetic dev/QA servers. UI steps use playwright-cli directly; API steps use Invoke-RestMethod with apiKey (or Basic auth fallback)."
+    "comment": "timeout in ms for AI model calls, local tools, playwright-cli actions, and REST API calls. screenshotOnStep=true takes a screenshot after every step. ignoreHttpsErrors=true bypasses self-signed / untrusted certificate warnings (NET::ERR_CERT_AUTHORITY_INVALID) — required for most Azure-hosted Kinetic dev/QA servers. UI steps use playwright-cli directly; API steps use Invoke-RestMethod with apiKey (or Basic auth fallback)."
   }
 }

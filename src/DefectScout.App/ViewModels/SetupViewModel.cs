@@ -38,7 +38,37 @@ public sealed partial class SetupViewModel : ViewModelBase
     private bool _screenshotOnFailure = true;
 
     [ObservableProperty]
-    private int _timeout = 30000;
+    private bool _ignoreHttpsErrors = true;
+
+    [ObservableProperty]
+    private int _timeout = PlaywrightOptions.DefaultTimeoutMilliseconds;
+
+    [ObservableProperty]
+    private string _agentRuntimeMode = AgentRuntimeOptions.CopilotSdkMode;
+
+    [ObservableProperty]
+    private string _ollamaEndpoint = "http://localhost:11434";
+
+    [ObservableProperty]
+    private string _stepExtractorModel = "qwen3.5:4b";
+
+    [ObservableProperty]
+    private string _envTesterModel = "qwen3.5:4b";
+
+    [ObservableProperty]
+    private int _maxConcurrentEnvTesters = 3;
+
+    [ObservableProperty]
+    private int _maxToolIterations = 80;
+
+    [ObservableProperty]
+    private int _ollamaContextTokens = AgentRuntimeOptions.DefaultOllamaContextTokens;
+
+    [ObservableProperty]
+    private int _ollamaMaxOutputTokens = AgentRuntimeOptions.DefaultOllamaMaxOutputTokens;
+
+    [ObservableProperty]
+    private string _ollamaThink = AgentRuntimeOptions.DefaultOllamaThink;
 
     [ObservableProperty]
     private bool _isSaving;
@@ -57,6 +87,15 @@ public sealed partial class SetupViewModel : ViewModelBase
 
     public ObservableCollection<KineticEnvironment> Environments { get; } = [];
 
+    public IReadOnlyList<string> AgentRuntimeModes { get; } =
+    [
+        AgentRuntimeOptions.CopilotSdkMode,
+        AgentRuntimeOptions.LocalOllamaMode,
+    ];
+
+    public bool IsLocalOllamaRuntime =>
+        string.Equals(AgentRuntimeMode, AgentRuntimeOptions.LocalOllamaMode, StringComparison.OrdinalIgnoreCase);
+
     public SetupViewModel(IConfigService configService, DefectScoutConfig? existing)
     {
         _configService = configService;
@@ -64,12 +103,7 @@ public sealed partial class SetupViewModel : ViewModelBase
         if (existing is not null)
             ApplyFromConfig(existing);
         else
-        {
-            var defaults = configService.CreateDefault();
-            ScreenshotBaseDir = defaults.ScreenshotBaseDir;
-            ReportDir = defaults.ReportDir;
-            _logDir = defaults.LogDir;
-        }
+            ApplyFromConfig(configService.CreateDefault());
     }
 
     private void ApplyFromConfig(DefectScoutConfig cfg)
@@ -82,13 +116,26 @@ public sealed partial class SetupViewModel : ViewModelBase
         PlaywrightHeadless = cfg.Playwright.Headless;
         ScreenshotOnStep = cfg.Playwright.ScreenshotOnStep;
         ScreenshotOnFailure = cfg.Playwright.ScreenshotOnFailure;
-        Timeout = cfg.Playwright.Timeout;
+        IgnoreHttpsErrors = cfg.Playwright.IgnoreHttpsErrors;
+        Timeout = PlaywrightOptions.NormalizeTimeout(cfg.Playwright.Timeout);
+
+        AgentRuntimeMode = cfg.AgentRuntime.Mode;
+        OllamaEndpoint = cfg.AgentRuntime.OllamaEndpoint;
+        StepExtractorModel = cfg.AgentRuntime.StepExtractorModel;
+        EnvTesterModel = cfg.AgentRuntime.EnvTesterModel;
+        MaxConcurrentEnvTesters = cfg.AgentRuntime.MaxConcurrentEnvTesters;
+        MaxToolIterations = cfg.AgentRuntime.MaxToolIterations;
+        OllamaContextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(cfg.AgentRuntime.OllamaContextTokens);
+        OllamaMaxOutputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(cfg.AgentRuntime.OllamaMaxOutputTokens);
+        OllamaThink = AgentRuntimeOptions.NormalizeOllamaThink(cfg.AgentRuntime.OllamaThink);
+
         Environments.Clear();
         foreach (var e in cfg.Environments)
             Environments.Add(e);
     }
 
     partial void OnIsSaveErrorChanged(bool value) => OnPropertyChanged(nameof(SaveResultColor));
+    partial void OnAgentRuntimeModeChanged(string value) => OnPropertyChanged(nameof(IsLocalOllamaRuntime));
 
     [RelayCommand]
     private void AddEnvironment()
@@ -99,6 +146,7 @@ public sealed partial class SetupViewModel : ViewModelBase
             Version = "2026.1",
             WebUrl = "https://localhost/ERPCurrent/",
             Username = "manager",
+            Company = "EPIC06",
         };
         Environments.Add(env);
         SelectedEnvironment = env;
@@ -163,7 +211,20 @@ public sealed partial class SetupViewModel : ViewModelBase
             Headless = PlaywrightHeadless,
             ScreenshotOnStep = ScreenshotOnStep,
             ScreenshotOnFailure = ScreenshotOnFailure,
-            Timeout = Timeout,
+            IgnoreHttpsErrors = IgnoreHttpsErrors,
+            Timeout = PlaywrightOptions.NormalizeTimeout(Timeout),
+        },
+        AgentRuntime = new AgentRuntimeOptions
+        {
+            Mode = AgentRuntimeMode,
+            OllamaEndpoint = OllamaEndpoint,
+            StepExtractorModel = StepExtractorModel,
+            EnvTesterModel = EnvTesterModel,
+            MaxConcurrentEnvTesters = Math.Max(1, MaxConcurrentEnvTesters),
+            MaxToolIterations = Math.Max(1, MaxToolIterations),
+            OllamaContextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(OllamaContextTokens),
+            OllamaMaxOutputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(OllamaMaxOutputTokens),
+            OllamaThink = AgentRuntimeOptions.NormalizeOllamaThink(OllamaThink),
         },
     };
 }

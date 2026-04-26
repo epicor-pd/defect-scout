@@ -12,5 +12,6 @@ public interface IStepExtractorService
         string ticketIdOrText,
         string? filePath,
         IProgress<string>? progress = null,
+        DefectScoutConfig? config = null,
         CancellationToken ct = default);
 }

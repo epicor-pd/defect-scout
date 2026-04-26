@@ -38,6 +38,18 @@ public sealed partial class TicketInputViewModel : ViewModelBase
 
     public int EnabledEnvironmentCount => _config.Environments.Count(e => e.Enabled);
 
+    public string RuntimeLabel => _config.AgentRuntime.IsLocalOllama
+        ? $"Local Ollama ({_config.AgentRuntime.StepExtractorModel})"
+        : "GitHub Copilot SDK";
+
+    public string ExtractionStatusText => _config.AgentRuntime.IsLocalOllama
+        ? "Local agent is extracting steps..."
+        : "Copilot is extracting steps...";
+
+    public string ExtractionButtonText => _config.AgentRuntime.IsLocalOllama
+        ? "Extract Steps with Local Agent"
+        : "Extract Steps with Copilot";
+
     public TicketInputViewModel(IStepExtractorService stepExtractor, DefectScoutConfig config)
     {
         _stepExtractor = stepExtractor;
@@ -88,7 +100,7 @@ public sealed partial class TicketInputViewModel : ViewModelBase
             var filePath    = string.IsNullOrWhiteSpace(TicketFilePath) ? null : TicketFilePath;
             var customSteps = TicketText?.Trim() ?? string.Empty;
 
-            var plan = await _stepExtractor.ExtractAsync(customSteps, filePath, progress);
+            var plan = await _stepExtractor.ExtractAsync(customSteps, filePath, progress, _config);
             _log.Information("ExtractSteps succeeded: ticket={Ticket}, steps={Count}",
                 plan.Ticket, plan.Steps?.Count ?? 0);
             StepsExtracted?.Invoke(plan);

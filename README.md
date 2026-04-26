@@ -1,6 +1,6 @@
 # Defect Scout
 
-**Defect Scout** is a Windows desktop application that uses the **GitHub Copilot SDK** and **Playwright** to automatically reproduce Kinetic ERP defects across multiple server environments — and generate a structured Markdown/HTML report — all without writing a single line of test code.
+**Defect Scout** is a Windows desktop application that uses either the **GitHub Copilot SDK** or a local **Microsoft Agent Framework + Ollama** runtime with **Playwright** to automatically reproduce Kinetic ERP defects across multiple server environments — and generate a structured Markdown/HTML report — all without writing a single line of test code.
 
 You paste a sustaining ticket. Defect Scout extracts the reproduction steps with AI, drives a real browser against every configured Kinetic environment in parallel, and delivers a side-by-side version-impact report so you always know which versions are affected and which are clean.
 
@@ -22,14 +22,14 @@ You paste a sustaining ticket. Defect Scout extracts the reproduction steps with
 
 ## How It Works
 
-Defect Scout runs a three-phase AI pipeline orchestrated entirely through the GitHub Copilot SDK:
+Defect Scout runs a three-phase AI pipeline. The default runtime remains the GitHub Copilot SDK; the alternate local runtime uses Microsoft Agent Framework agents backed by Ollama models.
 
 ```
 Ticket Text / File
         │
         ▼
 ┌─────────────────────────────┐
-│  Phase 1 — Step Extractor   │  GitHub Copilot (gpt-5.4)
+│  Phase 1 — Step Extractor   │  Copilot SDK or Ollama
 │  Parses raw ticket text     │  → StructuredTestPlan JSON
 │  into environment-agnostic  │    (steps, preconditions,
 │  reproduction steps         │     discriminating step)
@@ -37,7 +37,7 @@ Ticket Text / File
               │
               ▼
 ┌─────────────────────────────┐
-│  Phase 2 — Env Tester       │  One Copilot SDK session
+│  Phase 2 — Env Tester       │  One SDK/local agent
 │  Drives playwright-cli      │  per environment, all
 │  and Invoke-RestMethod      │  running in parallel
 │  against each Kinetic server│  → TestResult JSON per env
@@ -54,7 +54,7 @@ Ticket Text / File
 
 ### Phase 1 — Step Extraction
 
-The **Step Extractor** agent sends the ticket text to GitHub Copilot with a tightly constrained system prompt. It returns a `StructuredTestPlan` JSON that contains:
+The **Step Extractor** agent sends the ticket text to the configured runtime with a tightly constrained system prompt. In local mode this uses the configured Ollama extraction model, such as `qwen3.5:4b`. It returns a `StructuredTestPlan` JSON that contains:
 
 - Ticket ID, summary, affected module, and affected Business Object
 - Ordered reproduction steps with `action`, `target`, `value`, `expected`, and `selectorHints`
@@ -65,13 +65,13 @@ No hardcoded URLs, credentials, or server addresses ever appear in the plan; it 
 
 ### Phase 2 — Environment Testing
 
-The **Environment Tester** agent spins up one GitHub Copilot SDK session per Kinetic environment and executes the `StructuredTestPlan` autonomously using:
+The **Environment Tester** agent spins up one runtime session per Kinetic environment and executes the `StructuredTestPlan` autonomously using:
 
 - **`playwright-cli`** for all UI interactions (navigate, click, fill, select, verify, screenshot)
-- **`Invoke-RestMethod`** for OData REST API steps
+- **Kinetic REST API calls** for OData REST API steps
 - Self-signed certificate bypass, automatic login, and robust step-level screenshot capture
 
-All sessions share a single `CopilotClient` process and run **concurrently** (fleet mode), dramatically reducing total wall-clock time. A sequential fallback is available when needed.
+In Copilot SDK mode, sessions share a single `CopilotClient` process and run **concurrently**. In local mode, Microsoft Agent Framework creates one Ollama-backed environment tester per enabled environment, bounded by the configured local concurrency.
 
 Each session writes a `TestResult` JSON file per environment capturing the verdict (`REPRODUCED` / `NOT_REPRODUCED` / `ERROR`), per-step results, and screenshot paths.
 
@@ -148,8 +148,9 @@ The **Report** screen renders the assembled Markdown report inline. The summary 
 |---|---|---|
 | **Windows** | Windows 10 (x64) | Required by Avalonia Desktop + the Copilot CLI bundled binary |
 | **.NET SDK** | 9.0 | `dotnet --version` to verify |
-| **GitHub Copilot subscription** | Active seat | Individual, Business, or Enterprise plan. The app authenticates via the locally installed Copilot CLI. |
-| **GitHub Copilot CLI** | Latest | Install with `gh extension install github/gh-copilot` or via `npm install -g @github/copilot-cli`. Must be authenticated (`gh auth login`). |
+| **GitHub Copilot subscription** | Active seat for Copilot SDK mode | Individual, Business, or Enterprise plan. The app authenticates via the locally installed Copilot CLI. |
+| **GitHub Copilot CLI** | Latest for Copilot SDK mode | Install with `gh extension install github/gh-copilot` or via `npm install -g @github/copilot-cli`. Must be authenticated (`gh auth login`). |
+| **Ollama** | Latest for local mode | Verify with `ollama --version`. Pull the configured model, for example `ollama pull qwen3.5:4b`. |
 | **Node.js** | 18 LTS or newer | Required indirectly by `playwright-cli`. |
 | **playwright-cli** | Latest | Installed automatically if not found; or manually: `npm install -g @playwright/cli` |
 | **PowerShell** | 7+ (pwsh) | Used by the Env Tester agent to run `playwright-cli` commands and `Invoke-RestMethod` API calls |
@@ -187,7 +188,9 @@ On first launch, click **Open Config** on the Welcome screen. Add one entry per 
 - `restApiBaseUrl` — base OData v2 URL
 - `apiKey` or `username`/`password`/`company`
 
-Set `enabled: true` for every environment you want included in fleet runs.
+Set `enabled: true` for every environment you want included in runs. In **Agent Runtime**, choose `copilotSdk` for the cloud-backed path or `localOllama` for local Microsoft Agent Framework execution.
+
+For local Ollama mode, keep `ollamaContextTokens` explicit. On workstation-class machines with shared or low VRAM, `8192` is the intended default for parallel environment testing; very large model defaults such as 128K/256K contexts can dominate RAM and stall tool execution.
 
 ### 4. Run a Test
 
@@ -224,8 +227,19 @@ The configuration file is `defect-scout-config.json` (stored next to the executa
   "screenshotBaseDir": "",  // Defaults to <appdir>/screenshots
   "reportDir": "",          // Defaults to <appdir>/reports
   "logDir": "",             // Defaults to <appdir>/logs
+  "agentRuntime": {
+    "mode": "localOllama",                 // copilotSdk | localOllama
+    "ollamaEndpoint": "http://localhost:11434",
+    "stepExtractorModel": "qwen3.5:4b",    // balanced local extractor
+    "envTesterModel": "qwen3.5:4b",        // tool-calling env tester
+    "maxConcurrentEnvTesters": 3,
+    "maxToolIterations": 80,
+    "ollamaContextTokens": 8192,
+    "ollamaMaxOutputTokens": 4096,
+    "ollamaThink": "low"                   // low | medium | high | off
+  },
   "playwright": {
-    "timeout": 30000,             // ms per playwright-cli action
+    "timeout": 120000,            // ms for AI calls, tools, browser actions, and REST calls
     "screenshotOnStep": true,     // Screenshot after every step
     "screenshotOnFailure": true,  // Screenshot on any exception
     "headless": true,             // Run browser headlessly
@@ -322,9 +336,9 @@ logs/
 |---|---|
 | **UI Framework** | [Avalonia UI](https://avaloniaui.net/) 11.2 (cross-platform XAML desktop) |
 | **MVVM** | CommunityToolkit.Mvvm 8.4 |
-| **AI / Agent Runtime** | [GitHub Copilot SDK](https://github.com/github/copilot-sdk) (`GitHub.Copilot.SDK` 0.2) |
-| **Browser Automation** | `playwright-cli` (driven autonomously by the Copilot agent) |
-| **REST API Testing** | PowerShell `Invoke-RestMethod` (driven autonomously by the Copilot agent) |
+| **AI / Agent Runtime** | [GitHub Copilot SDK](https://github.com/github/copilot-sdk) (`GitHub.Copilot.SDK` 0.2), [Microsoft Agent Framework](https://learn.microsoft.com/en-us/agent-framework/overview/?pivots=programming-language-csharp), Ollama via `OllamaSharp` |
+| **Browser Automation** | `playwright-cli` (driven autonomously by the configured runtime agent) |
+| **REST API Testing** | PowerShell `Invoke-RestMethod` in Copilot SDK mode; local Kinetic REST tool in Agent Framework mode |
 | **Markdown Rendering** | Markdig 0.39 |
 | **Logging** | Serilog 4.2 (console + rolling file) |
 | **Target Framework** | .NET 9.0 |

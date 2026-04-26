@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using DefectScout.Core.Models;
 using DefectScout.Core.Prompts;
 using GitHub.Copilot.SDK;
+using Microsoft.Extensions.AI;
 using Serilog;
 
 namespace DefectScout.Core.Services;
@@ -44,6 +46,7 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         PlaywrightOptions opts,
         IReadOnlyList<IProgress<EnvironmentProgress>> progressList,
         Action<string>? onDispatchMode = null,
+        AgentRuntimeOptions? runtime = null,
         CancellationToken ct = default)
     {
         _log.Information("RunAllAsync: ticket={Ticket}, environments={Count}", plan.Ticket, environments.Count);
@@ -64,6 +67,14 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             JsonSerializer.Serialize(plan, s_jsonOpts), ct);
         _log.Debug("Plan written to {Path}", planFilePath);
 
+        runtime ??= new AgentRuntimeOptions();
+        if (runtime.IsLocalOllama)
+        {
+            onDispatchMode?.Invoke("local-parallel");
+            return await RunParallelLocalAsync(
+                plan, environments, screenshotBaseDir, resultsDir, opts, progressList, runtime, ct);
+        }
+
         // Dispatch all environments in parallel via SDK sessions on a single CopilotClient.
         // This is the SDK equivalent of the /fleet dispatch in defect-scout.agent.md Step 2b:
         // the defect-scout-env-tester instructions are embedded via SystemMessage.Replace so
@@ -80,8 +91,13 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         string resultFile,
         PlaywrightOptions opts,
         IProgress<EnvironmentProgress>? progress = null,
+        AgentRuntimeOptions? runtime = null,
         CancellationToken ct = default)
     {
+        runtime ??= new AgentRuntimeOptions();
+        if (runtime.IsLocalOllama)
+            return await RunLocalAgentAsync(plan, env, screenshotDir, resultFile, opts, runtime, progress, ct);
+
         // For a single-env direct invocation, create a dedicated client.
         await using var client = new CopilotClient(CliLocator.BuildClientOptions());
         await client.StartAsync();
@@ -319,6 +335,235 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         return await ReadResultFileAsync(resultFile, env, ct);
     }
 
+    // ── Parallel local Agent Framework dispatch ───────────────────────────
+
+    private async Task<List<TestResult>> RunParallelLocalAsync(
+        StructuredTestPlan plan,
+        IReadOnlyList<KineticEnvironment> environments,
+        string screenshotBaseDir,
+        string resultsDir,
+        PlaywrightOptions opts,
+        IReadOnlyList<IProgress<EnvironmentProgress>> progressList,
+        AgentRuntimeOptions runtime,
+        CancellationToken ct)
+    {
+        var maxConcurrent = Math.Clamp(runtime.MaxConcurrentEnvTesters, 1, Math.Max(1, environments.Count));
+        _log.Information("Local Ollama dispatch: {Count} environments, maxConcurrent={Max}, model={Model}",
+            environments.Count, maxConcurrent, runtime.EnvTesterModel);
+
+        for (int i = 0; i < environments.Count; i++)
+        {
+            var queuedProg = new EnvironmentProgress
+            {
+                EnvName    = environments[i].Name,
+                Version    = environments[i].Version,
+                Status     = "Queued",
+                TotalSteps = plan.Steps.Count,
+            };
+            queuedProg.Log.Add("Waiting for local Ollama agent...");
+            progressList[i].Report(queuedProg);
+        }
+
+        using var gate = new SemaphoreSlim(maxConcurrent);
+        var tasks = environments.Select(async (env, i) =>
+        {
+            await gate.WaitAsync(ct);
+            try
+            {
+                var screenshotDir = Path.Combine(screenshotBaseDir, env.VersionSlug, plan.Ticket);
+                var resultFile    = Path.Combine(resultsDir, $"{env.EnvSlug}-result.json");
+                return await RunLocalAgentAsync(
+                    plan, env, screenshotDir, resultFile, opts, runtime, progressList[i], ct);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }).ToList();
+
+        var results = await Task.WhenAll(tasks);
+        _log.Information("All {Count} local Ollama sessions completed", results.Length);
+        return [..results];
+    }
+
+    private async Task<TestResult> RunLocalAgentAsync(
+        StructuredTestPlan plan,
+        KineticEnvironment env,
+        string screenshotDir,
+        string resultFile,
+        PlaywrightOptions opts,
+        AgentRuntimeOptions runtime,
+        IProgress<EnvironmentProgress>? progress,
+        CancellationToken ct)
+    {
+        Directory.CreateDirectory(screenshotDir);
+
+        var prog = new EnvironmentProgress
+        {
+            EnvName    = env.Name,
+            Version    = env.Version,
+            Status     = "Running",
+            TotalSteps = plan.Steps.Count,
+        };
+        var logLock = prog.Log;
+
+        void Report(string msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg))
+                return;
+
+            _log.Debug("[{Env}] Local progress: {Message}", env.Name, Limit(SanitizeForLog(msg), 1000));
+            lock (logLock) { prog.Log.Add(msg); }
+
+            var sm = s_stepRx.Match(msg);
+            if (sm.Success && int.TryParse(sm.Groups[1].Value, out int sn) && sn > prog.CurrentStep)
+            {
+                prog.CurrentStep = sn;
+                prog.CurrentAction = msg;
+            }
+
+            var ssm = s_ssRx.Match(msg);
+            if (ssm.Success)
+            {
+                var ssPath = Path.Combine(screenshotDir, ssm.Value);
+                if (File.Exists(ssPath))
+                    prog.LatestScreenshot = ssPath;
+            }
+
+            progress?.Report(prog);
+        }
+
+        string SanitizeForLog(string value)
+        {
+            var sanitized = value.ReplaceLineEndings(" ");
+            if (!string.IsNullOrWhiteSpace(env.Password))
+                sanitized = sanitized.Replace(env.Password, "<redacted>", StringComparison.Ordinal);
+            if (!string.IsNullOrWhiteSpace(env.ApiKey))
+                sanitized = sanitized.Replace(env.ApiKey, "<redacted>", StringComparison.Ordinal);
+            return sanitized;
+        }
+
+        if (File.Exists(resultFile)) File.Delete(resultFile);
+
+        _log.Information("Starting local Ollama env tester for {Env} (v{Version})",
+            env.Name, env.Version);
+        Report($"Connecting local Ollama tester to {runtime.OllamaEndpoint} using {runtime.EnvTesterModel}...");
+
+        try
+        {
+            var operationTimeout = opts.TimeoutDuration;
+            Report($"Operation timeout: {(int)operationTimeout.TotalMilliseconds:N0} ms");
+            using var toolsHost = new LocalEnvTesterTools(
+                env, screenshotDir, resultFile, opts, operationTimeout, Report, ct);
+
+            using var ollama = LocalOllamaClientFactory.Create(
+                runtime.OllamaEndpoint,
+                runtime.EnvTesterModel,
+                operationTimeout);
+            var functionClient = new FunctionInvokingChatClient(
+                (IChatClient)ollama.Client,
+                loggerFactory: null,
+                functionInvocationServices: null)
+            {
+                IncludeDetailedErrors = true,
+                MaximumIterationsPerRequest = Math.Clamp(runtime.MaxToolIterations, 1, 200),
+                TerminateOnUnknownCalls = false,
+            };
+
+            var tools = toolsHost.CreateTools();
+            var localMaxOutput = Math.Min(
+                AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(runtime.OllamaMaxOutputTokens),
+                2048);
+            var options = LocalOllamaOptionsFactory.Create(
+                runtime,
+                runtime.EnvTesterModel,
+                localMaxOutput,
+                tools);
+            var prompt = AgentPrompts.BuildLocalEnvTesterPrompt(plan, env, screenshotDir, resultFile, opts);
+            var messages = new[]
+            {
+                new ChatMessage(ChatRole.System, AgentPrompts.LocalEnvTester),
+                new ChatMessage(ChatRole.User, prompt),
+            };
+
+            Report($"Ollama options: {LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput)}");
+            _log.Information(
+                "[{Env}] Local Ollama request starting: model={Model}, promptChars={PromptChars}, tools={ToolCount}, {Options}",
+                env.Name,
+                runtime.EnvTesterModel,
+                prompt.Length,
+                tools.Count,
+                LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput));
+
+            var stopwatch = Stopwatch.StartNew();
+            var response = await AwaitWithHeartbeatAsync(
+                functionClient.GetResponseAsync(messages, options, ct),
+                TimeSpan.FromSeconds(30),
+                elapsed =>
+                {
+                    var msg = $"Waiting for local model/tool loop after {elapsed:mm\\:ss}...";
+                    _log.Information("[{Env}] Local Ollama heartbeat: model={Model}, elapsedMs={ElapsedMs}",
+                        env.Name,
+                        runtime.EnvTesterModel,
+                        (long)elapsed.TotalMilliseconds);
+                    Report(msg);
+                },
+                ct);
+            _log.Information(
+                "[{Env}] Local Ollama request completed: model={Model}, elapsedMs={ElapsedMs}, responseChars={ResponseChars}",
+                env.Name,
+                runtime.EnvTesterModel,
+                stopwatch.ElapsedMilliseconds,
+                response.Text.Length);
+            Report(Limit(response.Text, 12000));
+
+            if (!File.Exists(resultFile))
+                await TryWriteResultFileFromResponseAsync(response.Text, resultFile, env, ct);
+
+            _log.Information("[{Env}] Local Ollama session complete. Result file present: {Present}",
+                env.Name, File.Exists(resultFile));
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            var message =
+                $"Local agent exceeded the configured operation timeout of {(int)opts.TimeoutDuration.TotalMilliseconds:N0} ms.";
+            _log.Error(ex, "[{Env}] Local Ollama session timed out", env.Name);
+            Report(message);
+            return BuildErrorResult(env, message);
+        }
+        catch (OperationCanceledException) { Report("Cancelled."); throw; }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "[{Env}] Local Agent Framework session failed", env.Name);
+            Report($"Local agent invocation error: {ex.Message}");
+            return BuildErrorResult(env, ex.Message);
+        }
+        finally
+        {
+            prog.Status = File.Exists(resultFile) ? "Done" : "Error";
+            progress?.Report(prog);
+        }
+
+        return await ReadResultFileAsync(resultFile, env, ct);
+    }
+
+    private static async Task<T> AwaitWithHeartbeatAsync<T>(
+        Task<T> task,
+        TimeSpan interval,
+        Action<TimeSpan> heartbeat,
+        CancellationToken ct)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            var completed = await Task.WhenAny(task, Task.Delay(interval, ct));
+            if (ReferenceEquals(completed, task))
+                return await task;
+
+            heartbeat(stopwatch.Elapsed);
+        }
+    }
+
     // ── Step 2b: Fleet Dispatch ─────────────────────────────────────────────
 
     /// <summary>
@@ -373,12 +618,11 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         string resultFile, KineticEnvironment env, CancellationToken ct)
     {
         if (!File.Exists(resultFile))
-            return BuildErrorResult(env, "Copilot env-tester produced no result file.");
+            return BuildErrorResult(env, "Env-tester produced no result file.");
         try
         {
             var json = await File.ReadAllTextAsync(resultFile, ct);
-            var start = json.IndexOf('{');
-            if (start > 0) json = json[start..];
+            json = JsonResponseParser.ExtractFirstObject(json);
             return JsonSerializer.Deserialize<TestResult>(json, s_jsonOpts)
                    ?? BuildErrorResult(env, "Null result from env-tester.");
         }
@@ -387,6 +631,36 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             return BuildErrorResult(env, $"Could not parse TestResult: {ex.Message}");
         }
     }
+
+    private static async Task TryWriteResultFileFromResponseAsync(
+        string rawResponse,
+        string resultFile,
+        KineticEnvironment env,
+        CancellationToken ct)
+    {
+        try
+        {
+            var json = JsonResponseParser.ExtractFirstObject(rawResponse);
+            var result = JsonSerializer.Deserialize<TestResult>(json, s_jsonOpts);
+            if (result is null)
+                return;
+
+            if (string.IsNullOrWhiteSpace(result.EnvName))
+                result.EnvName = env.Name;
+            if (string.IsNullOrWhiteSpace(result.Version))
+                result.Version = env.Version;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(resultFile) ?? ".");
+            await File.WriteAllTextAsync(resultFile, JsonSerializer.Serialize(result, s_jsonOpts), ct);
+        }
+        catch
+        {
+            // The caller will surface the missing result file as an ERROR TestResult.
+        }
+    }
+
+    private static string Limit(string value, int maxChars) =>
+        value.Length <= maxChars ? value : value[..maxChars] + "\n...<truncated>";
 
     private static TestResult BuildErrorResult(KineticEnvironment env, string error) => new()
     {

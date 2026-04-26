@@ -14,6 +14,7 @@
         <Run Text="{Binding EnabledEnvironmentCount}" FontWeight="SemiBold"/>
         <Run Text="environment(s)."/>
       </TextBlock>
+      <TextBlock Text="{Binding RuntimeLabel}" FontSize="12" Foreground="#555"/>
     </StackPanel>
 
     <!-- Main input area -->
@@ -90,7 +91,7 @@
       <Grid RowDefinitions="Auto,*">
         <StackPanel Orientation="Horizontal" Spacing="8" Margin="12,8">
           <ProgressBar IsIndeterminate="True" Width="100" Height="4" VerticalAlignment="Center"/>
-          <TextBlock Text="Copilot is extracting steps…" Foreground="#AAD8FF"
+          <TextBlock Text="{Binding ExtractionStatusText}" Foreground="#AAD8FF"
                      VerticalAlignment="Center" FontWeight="SemiBold"/>
         </StackPanel>
         <ScrollViewer Grid.Row="1" Margin="4">
@@ -108,7 +109,7 @@
               CornerRadius="4" Padding="12,8"
               IsEnabled="{Binding !IsExtracting}"/>
 
-      <Button Content="🔍  Extract Steps with Copilot"
+      <Button Content="{Binding ExtractionButtonText}"
               Command="{Binding ExtractStepsCommand}"
               Background="#0078D4" Foreground="White"
               FontSize="14" CornerRadius="6" Padding="16,10"

@@ -206,6 +206,68 @@ public static class AgentPrompts
         }
         """;
 
+    /// <summary>
+    /// Tooling supplement used only by the Microsoft Agent Framework + Ollama runtime.
+    /// It preserves the source Defect Scout behavior while mapping terminal/API actions to local tools.
+    /// </summary>
+    public const string LocalEnvTesterTooling = """
+
+        LOCAL AGENT FRAMEWORK TOOLING:
+        - Use run_playwright for every playwright-cli command. Pass only the arguments after playwright-cli.
+          Example: run_playwright("--version") or run_playwright("-s=ds-2026-1 snapshot").
+        - Use invoke_kinetic_rest for api-call steps. It performs the same Kinetic REST request with
+          the configured environment auth headers and saves the response under screenshotDir.
+        - Use list_evidence_files whenever you need to confirm available screenshots or API evidence.
+        - Use write_result_file exactly once at the end with the final TestResult JSON.
+        - After each tool result, reason from the observed output. Retry with alternate selectors,
+          snapshots, SSL bypass clicks, or REST checks when that is the appropriate autonomous recovery.
+        - If a tool output proves login/server/tooling failure before the discriminating step, write ERROR.
+        - If the model cannot call tools, return only the final TestResult JSON so the host can persist it.
+        """;
+
+    /// <summary>
+    /// Lean local-system prompt for Ollama tool calling.  The host tools already own
+    /// credentials and command execution, so this avoids sending secrets and
+    /// Copilot-specific shell instructions through the local model.
+    /// </summary>
+    public const string LocalEnvTester = """
+        You are the Defect Scout Local Environment Tester. Test ONE Kinetic environment
+        against the provided StructuredTestPlan using only the supplied tools.
+
+        CONSTRAINTS:
+        - Operate autonomously. Do not ask the user for input.
+        - Do not modify application source code.
+        - Do not invent credentials. The tools already use the configured environment credentials.
+        - Use run_playwright for UI/navigation/screenshot actions. Pass only arguments after playwright-cli.
+        - Use get_environment_login only if the Kinetic login form requires explicit username, password, or company values.
+        - Use invoke_kinetic_rest for api-call steps.
+        - Use list_evidence_files to confirm screenshots or API evidence when needed.
+        - Call write_result_file exactly once at the end with the final TestResult JSON.
+
+        EXECUTION:
+        - Start with run_playwright("--version"), then open the environment webUrl with a stable session.
+        - If a login form appears, call get_environment_login, fill the fields, submit, and take a login screenshot.
+        - Take snapshots before UI actions so element references are grounded in the current page.
+        - For navigate, use the app menu/search to open the named form or module.
+        - For click/fill/select, prefer visible labels, roles, and selectorHints from the plan.
+        - For verify, compare the observed page/API state to the step.expected text.
+        - Mark defectObserved=true when a discriminating step's expected condition is not met.
+        - If login, server access, tooling, or navigation fails before the discriminating step, write ERROR.
+
+        RESULT:
+        Write this JSON shape to resultFile via write_result_file:
+        {
+          "envName": "...",
+          "version": "...",
+          "result": "REPRODUCED|NOT_REPRODUCED|ERROR",
+          "stepResults": [{ "stepNumber": 1, "action": "...", "passed": true, "screenshot": "filename.png", "notes": "..." }],
+          "screenshotPaths": ["absolute\\path\\step-01.png"],
+          "defectObserved": true,
+          "notes": "brief factual narrative",
+          "error": null
+        }
+        """;
+
     private static readonly JsonSerializerOptions s_jsonOpts = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -242,6 +304,57 @@ public static class AgentPrompts
             playwright: {playwrightJson}
 
             Write the final TestResult JSON to: {resultFile}
+            """;
+    }
+
+    /// <summary>
+    /// Builds the local Ollama tester user message without credentials. The local tool
+    /// host already receives the full environment object and applies auth internally.
+    /// </summary>
+    public static string BuildLocalEnvTesterPrompt(
+        StructuredTestPlan plan,
+        KineticEnvironment env,
+        string screenshotDir,
+        string resultFile,
+        PlaywrightOptions opts)
+    {
+        var planJson = JsonSerializer.Serialize(plan, s_jsonOpts);
+        var envSummaryJson = JsonSerializer.Serialize(new
+        {
+            env.Name,
+            env.Version,
+            env.VersionSlug,
+            env.WebUrl,
+            HasRestApi = !string.IsNullOrWhiteSpace(env.RestApiBaseUrl),
+            CompanyConfigured = !string.IsNullOrWhiteSpace(env.Company),
+            ApiKeyConfigured = !string.IsNullOrWhiteSpace(env.ApiKey),
+            UserConfigured = !string.IsNullOrWhiteSpace(env.Username),
+            env.Notes,
+        }, s_jsonOpts);
+        var playwrightJson = JsonSerializer.Serialize(new
+        {
+            opts.Headless,
+            opts.ScreenshotOnStep,
+            opts.ScreenshotOnFailure,
+            opts.IgnoreHttpsErrors,
+            opts.Timeout,
+        }, s_jsonOpts);
+
+        return $"""
+            Test this defect reproduction plan against the provided environment summary.
+            Use the tools for all browser, REST, evidence, and result-file actions.
+
+            StructuredTestPlan:
+            {planJson}
+
+            EnvironmentSummary:
+            {envSummaryJson}
+
+            screenshotDir: {screenshotDir}
+
+            playwright: {playwrightJson}
+
+            resultFile: {resultFile}
             """;
     }
 

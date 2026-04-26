@@ -4,8 +4,12 @@ namespace DefectScout.Core.Models;
 
 public class PlaywrightOptions
 {
+    public const int DefaultTimeoutMilliseconds = 120000;
+    public const int MinTimeoutMilliseconds = 5000;
+    public const int MaxTimeoutMilliseconds = 7200000;
+
     [JsonPropertyName("timeout")]
-    public int Timeout { get; set; } = 30000;
+    public int Timeout { get; set; } = DefaultTimeoutMilliseconds;
 
     [JsonPropertyName("screenshotOnStep")]
     public bool ScreenshotOnStep { get; set; } = true;
@@ -18,4 +22,13 @@ public class PlaywrightOptions
 
     [JsonPropertyName("ignoreHttpsErrors")]
     public bool IgnoreHttpsErrors { get; set; } = true;
+
+    [JsonIgnore]
+    public TimeSpan TimeoutDuration => TimeSpan.FromMilliseconds(NormalizeTimeout(Timeout));
+
+    public static int NormalizeTimeout(int timeoutMilliseconds) =>
+        Math.Clamp(
+            timeoutMilliseconds > 0 ? timeoutMilliseconds : DefaultTimeoutMilliseconds,
+            MinTimeoutMilliseconds,
+            MaxTimeoutMilliseconds);
 }

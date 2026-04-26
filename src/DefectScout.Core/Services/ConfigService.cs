@@ -80,6 +80,7 @@ public sealed class ConfigService : IConfigService
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
+        NormalizeTimeouts(config);
         _log.Information("SaveAsync: writing config to {Path}", AppConfigPath);
         await using var stream = File.Create(AppConfigPath);
         await JsonSerializer.SerializeAsync(stream, config, s_jsonOptions, ct);
@@ -99,11 +100,23 @@ public sealed class ConfigService : IConfigService
             LogDir = Path.Combine(AppDataDir, "logs"),
             Playwright = new PlaywrightOptions
             {
-                Timeout = 30000,
+                Timeout = PlaywrightOptions.DefaultTimeoutMilliseconds,
                 ScreenshotOnStep = true,
                 ScreenshotOnFailure = true,
                 Headless = true,
                 IgnoreHttpsErrors = true,
+            },
+            AgentRuntime = new AgentRuntimeOptions
+            {
+                Mode = AgentRuntimeOptions.CopilotSdkMode,
+                OllamaEndpoint = "http://localhost:11434",
+                StepExtractorModel = "qwen3.5:4b",
+                EnvTesterModel = "qwen3.5:4b",
+                MaxConcurrentEnvTesters = 3,
+                MaxToolIterations = 80,
+                OllamaContextTokens = AgentRuntimeOptions.DefaultOllamaContextTokens,
+                OllamaMaxOutputTokens = AgentRuntimeOptions.DefaultOllamaMaxOutputTokens,
+                OllamaThink = AgentRuntimeOptions.DefaultOllamaThink,
             },
             Environments =
             [
@@ -119,6 +132,32 @@ public sealed class ConfigService : IConfigService
                     Password = "",
                     Company = "EPIC06",
                     Notes = "Local dev instance. Fill in your credentials above.",
+                },
+                new KineticEnvironment
+                {
+                    Name = "Kinetic 2025.2 QA",
+                    Version = "2025.2",
+                    Enabled = false,
+                    WebUrl = "https://qa-server/ERP252/Apps/ERP/Home/",
+                    RestApiBaseUrl = "https://qa-server/ERP252/api/v2/odata/EPIC06/",
+                    ApiKey = "",
+                    Username = "manager",
+                    Password = "",
+                    Company = "EPIC06",
+                    Notes = "Fill in the QA URL and credentials, then enable for cross-version runs.",
+                },
+                new KineticEnvironment
+                {
+                    Name = "Kinetic 2025.1 Staging",
+                    Version = "2025.1",
+                    Enabled = false,
+                    WebUrl = "https://staging-server/ERP251/Apps/ERP/Home/",
+                    RestApiBaseUrl = "https://staging-server/ERP251/api/v2/odata/EPIC06/",
+                    ApiKey = "",
+                    Username = "manager",
+                    Password = "",
+                    Company = "EPIC06",
+                    Notes = "Fill in the staging URL and credentials, then enable for cross-version runs.",
                 }
             ]
         };
@@ -135,7 +174,39 @@ public sealed class ConfigService : IConfigService
         cfg.ScreenshotBaseDir = NormalizePath(cfg.ScreenshotBaseDir, "screenshots");
         cfg.ReportDir         = NormalizePath(cfg.ReportDir, "reports");
         cfg.LogDir            = NormalizePath(cfg.LogDir, "logs");
+        cfg.Playwright ??= new PlaywrightOptions();
+        cfg.AgentRuntime ??= new AgentRuntimeOptions();
+        NormalizeTimeouts(cfg);
         return cfg;
+    }
+
+    private static void NormalizeTimeouts(DefectScoutConfig cfg)
+    {
+        cfg.Playwright ??= new PlaywrightOptions();
+        cfg.AgentRuntime ??= new AgentRuntimeOptions();
+
+        if (cfg.AgentRuntime.LegacyToolTimeoutSeconds is int legacySeconds &&
+            legacySeconds > 0 &&
+            cfg.Playwright.Timeout <= 30000)
+        {
+            var maxLegacySeconds = PlaywrightOptions.MaxTimeoutMilliseconds / 1000;
+            var migratedMs = Math.Min(legacySeconds, maxLegacySeconds) * 1000;
+            cfg.Playwright.Timeout = PlaywrightOptions.NormalizeTimeout(migratedMs);
+        }
+        else
+        {
+            cfg.Playwright.Timeout = PlaywrightOptions.NormalizeTimeout(cfg.Playwright.Timeout);
+        }
+
+        cfg.AgentRuntime.LegacyToolTimeoutSeconds = null;
+        cfg.AgentRuntime.MaxConcurrentEnvTesters = Math.Max(1, cfg.AgentRuntime.MaxConcurrentEnvTesters);
+        cfg.AgentRuntime.MaxToolIterations = Math.Clamp(cfg.AgentRuntime.MaxToolIterations, 1, 200);
+        cfg.AgentRuntime.OllamaContextTokens =
+            AgentRuntimeOptions.NormalizeOllamaContextTokens(cfg.AgentRuntime.OllamaContextTokens);
+        cfg.AgentRuntime.OllamaMaxOutputTokens =
+            AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(cfg.AgentRuntime.OllamaMaxOutputTokens);
+        cfg.AgentRuntime.OllamaThink =
+            AgentRuntimeOptions.NormalizeOllamaThink(cfg.AgentRuntime.OllamaThink);
     }
 
     private string NormalizePath(string path, string fallbackSubDir)

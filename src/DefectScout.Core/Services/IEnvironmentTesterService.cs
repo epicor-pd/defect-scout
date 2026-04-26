@@ -22,6 +22,7 @@ public interface IEnvironmentTesterService
         PlaywrightOptions opts,
         IReadOnlyList<IProgress<EnvironmentProgress>> progressList,
         Action<string>? onDispatchMode = null,
+        AgentRuntimeOptions? runtime = null,
         CancellationToken ct = default);
 
     /// <summary>
@@ -34,5 +35,6 @@ public interface IEnvironmentTesterService
         string resultFile,
         PlaywrightOptions playwrightOptions,
         IProgress<EnvironmentProgress>? progress = null,
+        AgentRuntimeOptions? runtime = null,
         CancellationToken ct = default);
 }

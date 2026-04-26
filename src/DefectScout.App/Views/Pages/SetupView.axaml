@@ -54,7 +54,7 @@
           <StackPanel Spacing="8" DataContext="{Binding SelectedEnvironment}">
             <TextBlock Text="Environment Settings" FontWeight="SemiBold" FontSize="14"/>
 
-            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
                   HorizontalAlignment="Stretch">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="Friendly Name" VerticalAlignment="Center" Margin="0,6,0,0"/>
               <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Name}" Margin="0,4,0,2"/>
@@ -78,6 +78,12 @@
               <TextBlock Grid.Row="6" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Margin="0,6,0,0"/>
               <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding ApiKey}"
                        Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="7" Grid.Column="0" Text="Company" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Company}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="8" Grid.Column="0" Text="Notes" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="8" Grid.Column="1" Text="{Binding Notes}" Margin="0,4,0,2"/>
             </Grid>
           </StackPanel>
         </Border>
@@ -94,18 +100,66 @@
             <TextBlock Text="Report Directory" Margin="0,4,0,0"/>
             <TextBox Text="{Binding ReportDir}"/>
 
+            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+              <TextBlock Text="Operation Timeout (ms)" VerticalAlignment="Center"/>
+              <NumericUpDown Value="{Binding Timeout}" Minimum="5000" Maximum="3600000"
+                             Increment="10000" FormatString="N0" Width="140"/>
+            </StackPanel>
+
+            <Separator Margin="0,8"/>
+
+            <TextBlock Text="Agent Runtime" FontWeight="SemiBold"/>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Mode" VerticalAlignment="Center" Width="130"/>
+              <ComboBox ItemsSource="{Binding AgentRuntimeModes}"
+                        SelectedItem="{Binding AgentRuntimeMode}"
+                        Width="180"/>
+            </StackPanel>
+
+            <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                  IsVisible="{Binding IsLocalOllamaRuntime}">
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="Ollama Endpoint" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding OllamaEndpoint}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="Extractor Model" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding StepExtractorModel}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="2" Grid.Column="0" Text="Env Tester Model" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding EnvTesterModel}" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="3" Grid.Column="0" Text="Max Env Agents" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <NumericUpDown Grid.Row="3" Grid.Column="1" Value="{Binding MaxConcurrentEnvTesters}"
+                             Minimum="1" Maximum="8" Increment="1" FormatString="N0" Width="120"
+                             HorizontalAlignment="Left" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="4" Grid.Column="0" Text="Tool Iterations" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <NumericUpDown Grid.Row="4" Grid.Column="1" Value="{Binding MaxToolIterations}"
+                             Minimum="1" Maximum="200" Increment="5" FormatString="N0" Width="120"
+                             HorizontalAlignment="Left" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="5" Grid.Column="0" Text="Context Tokens" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <NumericUpDown Grid.Row="5" Grid.Column="1" Value="{Binding OllamaContextTokens}"
+                             Minimum="2048" Maximum="32768" Increment="1024" FormatString="N0" Width="140"
+                             HorizontalAlignment="Left" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="6" Grid.Column="0" Text="Max Output" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <NumericUpDown Grid.Row="6" Grid.Column="1" Value="{Binding OllamaMaxOutputTokens}"
+                             Minimum="512" Maximum="8192" Increment="512" FormatString="N0" Width="140"
+                             HorizontalAlignment="Left" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="7" Grid.Column="0" Text="Think" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding OllamaThink}" Width="140"
+                       HorizontalAlignment="Left" Margin="0,4,0,2"
+                       Watermark="low | medium | high | off"/>
+            </Grid>
+
             <Separator Margin="0,8"/>
 
             <TextBlock Text="Playwright Options" FontWeight="SemiBold"/>
             <CheckBox IsChecked="{Binding PlaywrightHeadless}" Content="Headless (no visible browser)"/>
             <CheckBox IsChecked="{Binding ScreenshotOnStep}" Content="Screenshot on every step"/>
             <CheckBox IsChecked="{Binding ScreenshotOnFailure}" Content="Screenshot on failure"/>
-
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <TextBlock Text="Timeout (ms)" VerticalAlignment="Center"/>
-              <NumericUpDown Value="{Binding Timeout}" Minimum="5000" Maximum="120000"
-                             Increment="5000" FormatString="N0" Width="120"/>
-            </StackPanel>
+            <CheckBox IsChecked="{Binding IgnoreHttpsErrors}" Content="Ignore HTTPS certificate errors"/>
           </StackPanel>
         </Border>
 
