@@ -23,6 +23,9 @@ public class PlaywrightOptions
     [JsonPropertyName("ignoreHttpsErrors")]
     public bool IgnoreHttpsErrors { get; set; } = true;
 
+    [JsonPropertyName("maxAutoHealAttempts")]
+    public int MaxAutoHealAttempts { get; set; } = 3;
+
     [JsonIgnore]
     public TimeSpan TimeoutDuration => TimeSpan.FromMilliseconds(NormalizeTimeout(Timeout));
 

@@ -116,7 +116,7 @@
                         Width="180"/>
             </StackPanel>
 
-            <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+              <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
                   IsVisible="{Binding IsLocalOllamaRuntime}">
               <TextBlock Grid.Row="0" Grid.Column="0" Text="Ollama Endpoint" VerticalAlignment="Center" Margin="0,6,0,0"/>
               <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding OllamaEndpoint}" Margin="0,4,0,2"/>
@@ -147,10 +147,15 @@
                              Minimum="512" Maximum="8192" Increment="512" FormatString="N0" Width="140"
                              HorizontalAlignment="Left" Margin="0,4,0,2"/>
 
-              <TextBlock Grid.Row="7" Grid.Column="0" Text="Think" VerticalAlignment="Center" Margin="0,6,0,0"/>
-              <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding OllamaThink}" Width="140"
-                       HorizontalAlignment="Left" Margin="0,4,0,2"
-                       Watermark="low | medium | high | off"/>
+              <TextBlock Grid.Row="7" Grid.Column="0" Text="Think (Extractor)" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <ComboBox Grid.Row="7" Grid.Column="1" ItemsSource="{Binding OllamaThinkOptions}"
+                        SelectedItem="{Binding OllamaThinkStepExtractor}" Width="140"
+                        HorizontalAlignment="Left" Margin="0,4,0,2"/>
+
+              <TextBlock Grid.Row="8" Grid.Column="0" Text="Think (Env Tester)" VerticalAlignment="Center" Margin="0,6,0,0"/>
+              <ComboBox Grid.Row="8" Grid.Column="1" ItemsSource="{Binding OllamaThinkOptions}"
+                        SelectedItem="{Binding OllamaThinkEnvTester}" Width="140"
+                        HorizontalAlignment="Left" Margin="0,4,0,2"/>
             </Grid>
 
             <Separator Margin="0,8"/>

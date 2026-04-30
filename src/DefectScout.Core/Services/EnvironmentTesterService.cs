@@ -99,7 +99,8 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             return await RunLocalAgentAsync(plan, env, screenshotDir, resultFile, opts, runtime, progress, ct);
 
         // For a single-env direct invocation, create a dedicated client.
-        await using var client = new CopilotClient(CliLocator.BuildClientOptions());
+        var clientOptions = await Task.Run(() => CliLocator.BuildClientOptions());
+        await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
         return await RunSdkSessionAsync(client, plan, env, screenshotDir, resultFile, opts, progress, ct);
     }
@@ -140,7 +141,8 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
 
         // A single CopilotClient manages one bundled Copilot CLI process.
         // Multiple sessions on the same client run independently and concurrently.
-        await using var client = new CopilotClient(CliLocator.BuildClientOptions());
+        var clientOptions = await Task.Run(() => CliLocator.BuildClientOptions());
+        await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
         _log.Information("CopilotClient started; dispatching {Count} parallel sessions", environments.Count);
 
@@ -585,7 +587,8 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             environments.Count, plan.Ticket);
 
         // Share one client across all sequential sessions to avoid spawning multiple CLI processes.
-        await using var client = new CopilotClient(CliLocator.BuildClientOptions());
+        var clientOptions = await Task.Run(() => CliLocator.BuildClientOptions());
+        await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
 
         var results = new List<TestResult>();

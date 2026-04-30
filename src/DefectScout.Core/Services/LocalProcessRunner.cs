@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 
 namespace DefectScout.Core.Services;
 
@@ -11,25 +12,57 @@ internal static class LocalProcessRunner
         CancellationToken ct)
     {
         Directory.CreateDirectory(workingDirectory);
-
-        using var process = new Process
+        // Prefer PowerShell Core (pwsh) when available on PATH, fall back to Windows PowerShell.
+        static string? FindExecutableOnPath(string exe)
         {
-            StartInfo = new ProcessStartInfo
+            var pathVar = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
-                FileName = "powershell.exe",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                WorkingDirectory = workingDirectory,
-            },
+                try
+                {
+                    var candidate = Path.Combine(dir, exe);
+                    if (File.Exists(candidate)) return candidate;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        var exePath = FindExecutableOnPath("pwsh.exe")
+                   ?? FindExecutableOnPath("powershell.exe")
+                   ?? "powershell.exe";
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = exePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            WorkingDirectory = workingDirectory,
         };
 
-        process.StartInfo.ArgumentList.Add("-NoProfile");
-        process.StartInfo.ArgumentList.Add("-ExecutionPolicy");
-        process.StartInfo.ArgumentList.Add("Bypass");
-        process.StartInfo.ArgumentList.Add("-Command");
-        process.StartInfo.ArgumentList.Add(command);
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-Command");
+        startInfo.ArgumentList.Add(command);
+
+        try
+        {
+            var extraEnv = CliLocator.BuildCliEnvironment();
+            if (extraEnv is not null && extraEnv.TryGetValue("PATH", out var prependedPath))
+            {
+                // Replace the child's PATH with the prepended variant so child process resolves user-local bins first.
+                startInfo.Environment["PATH"] = prependedPath;
+            }
+        }
+        catch
+        {
+            // Best-effort; do not fail process start if environment augmentation is unavailable.
+        }
+
+        using var process = new Process { StartInfo = startInfo };
 
         process.Start();
 

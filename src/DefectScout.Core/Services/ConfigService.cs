@@ -117,6 +117,8 @@ public sealed class ConfigService : IConfigService
                 OllamaContextTokens = AgentRuntimeOptions.DefaultOllamaContextTokens,
                 OllamaMaxOutputTokens = AgentRuntimeOptions.DefaultOllamaMaxOutputTokens,
                 OllamaThink = AgentRuntimeOptions.DefaultOllamaThink,
+                OllamaThinkStepExtractor = AgentRuntimeOptions.DefaultOllamaThink,
+                OllamaThinkEnvTester = AgentRuntimeOptions.DefaultOllamaThink,
             },
             Environments =
             [
@@ -207,6 +209,17 @@ public sealed class ConfigService : IConfigService
             AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(cfg.AgentRuntime.OllamaMaxOutputTokens);
         cfg.AgentRuntime.OllamaThink =
             AgentRuntimeOptions.NormalizeOllamaThink(cfg.AgentRuntime.OllamaThink);
+
+        // Normalize per-purpose thinking levels; fall back to legacy OllamaThink when not set.
+        cfg.AgentRuntime.OllamaThinkStepExtractor = AgentRuntimeOptions.NormalizeOllamaThink(
+            string.IsNullOrWhiteSpace(cfg.AgentRuntime.OllamaThinkStepExtractor)
+                ? cfg.AgentRuntime.OllamaThink
+                : cfg.AgentRuntime.OllamaThinkStepExtractor);
+
+        cfg.AgentRuntime.OllamaThinkEnvTester = AgentRuntimeOptions.NormalizeOllamaThink(
+            string.IsNullOrWhiteSpace(cfg.AgentRuntime.OllamaThinkEnvTester)
+                ? cfg.AgentRuntime.OllamaThink
+                : cfg.AgentRuntime.OllamaThinkEnvTester);
     }
 
     private string NormalizePath(string path, string fallbackSubDir)

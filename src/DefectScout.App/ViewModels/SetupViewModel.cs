@@ -68,7 +68,10 @@ public sealed partial class SetupViewModel : ViewModelBase
     private int _ollamaMaxOutputTokens = AgentRuntimeOptions.DefaultOllamaMaxOutputTokens;
 
     [ObservableProperty]
-    private string _ollamaThink = AgentRuntimeOptions.DefaultOllamaThink;
+    private string _ollamaThinkStepExtractor = AgentRuntimeOptions.DefaultOllamaThink;
+
+    [ObservableProperty]
+    private string _ollamaThinkEnvTester = AgentRuntimeOptions.DefaultOllamaThink;
 
     [ObservableProperty]
     private bool _isSaving;
@@ -92,6 +95,9 @@ public sealed partial class SetupViewModel : ViewModelBase
         AgentRuntimeOptions.CopilotSdkMode,
         AgentRuntimeOptions.LocalOllamaMode,
     ];
+
+    public IReadOnlyList<string> OllamaThinkOptions { get; } =
+        [ "off", "low", "medium", "high" ];
 
     public bool IsLocalOllamaRuntime =>
         string.Equals(AgentRuntimeMode, AgentRuntimeOptions.LocalOllamaMode, StringComparison.OrdinalIgnoreCase);
@@ -127,7 +133,16 @@ public sealed partial class SetupViewModel : ViewModelBase
         MaxToolIterations = cfg.AgentRuntime.MaxToolIterations;
         OllamaContextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(cfg.AgentRuntime.OllamaContextTokens);
         OllamaMaxOutputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(cfg.AgentRuntime.OllamaMaxOutputTokens);
-        OllamaThink = AgentRuntimeOptions.NormalizeOllamaThink(cfg.AgentRuntime.OllamaThink);
+        // Per-purpose think settings (fall back to legacy OllamaThink if not present)
+        OllamaThinkStepExtractor = AgentRuntimeOptions.NormalizeOllamaThink(
+            string.IsNullOrWhiteSpace(cfg.AgentRuntime.OllamaThinkStepExtractor)
+                ? cfg.AgentRuntime.OllamaThink
+                : cfg.AgentRuntime.OllamaThinkStepExtractor);
+
+        OllamaThinkEnvTester = AgentRuntimeOptions.NormalizeOllamaThink(
+            string.IsNullOrWhiteSpace(cfg.AgentRuntime.OllamaThinkEnvTester)
+                ? cfg.AgentRuntime.OllamaThink
+                : cfg.AgentRuntime.OllamaThinkEnvTester);
 
         Environments.Clear();
         foreach (var e in cfg.Environments)
@@ -214,7 +229,7 @@ public sealed partial class SetupViewModel : ViewModelBase
             IgnoreHttpsErrors = IgnoreHttpsErrors,
             Timeout = PlaywrightOptions.NormalizeTimeout(Timeout),
         },
-        AgentRuntime = new AgentRuntimeOptions
+            AgentRuntime = new AgentRuntimeOptions
         {
             Mode = AgentRuntimeMode,
             OllamaEndpoint = OllamaEndpoint,
@@ -224,7 +239,10 @@ public sealed partial class SetupViewModel : ViewModelBase
             MaxToolIterations = Math.Max(1, MaxToolIterations),
             OllamaContextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(OllamaContextTokens),
             OllamaMaxOutputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(OllamaMaxOutputTokens),
-            OllamaThink = AgentRuntimeOptions.NormalizeOllamaThink(OllamaThink),
+            // Preserve legacy OllamaThink for backwards compatibility (set to extractor's level)
+            OllamaThink = AgentRuntimeOptions.NormalizeOllamaThink(OllamaThinkStepExtractor),
+            OllamaThinkStepExtractor = AgentRuntimeOptions.NormalizeOllamaThink(OllamaThinkStepExtractor),
+            OllamaThinkEnvTester = AgentRuntimeOptions.NormalizeOllamaThink(OllamaThinkEnvTester),
         },
     };
 }

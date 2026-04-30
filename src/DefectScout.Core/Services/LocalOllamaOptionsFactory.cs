@@ -32,7 +32,19 @@ internal static class LocalOllamaOptionsFactory
         options.AddOllamaOption(OllamaOption.Temperature, 0.1f);
         options.AddOllamaOption(OllamaOption.TopP, 0.8f);
 
-        var think = AgentRuntimeOptions.NormalizeOllamaThink(runtime.OllamaThink);
+        // Determine the effective "think" setting for this model. Support per-purpose
+        // settings: step-extractor and env-tester can have their own configured levels.
+        var modelName = NormalizeModelName(model);
+        var stepModelName = NormalizeModelName(runtime.StepExtractorModel);
+        var envModelName = NormalizeModelName(runtime.EnvTesterModel);
+
+        var thinkSource = string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
+            ? runtime.OllamaThinkStepExtractor
+            : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
+                ? runtime.OllamaThinkEnvTester
+                : runtime.OllamaThink;
+
+        var think = AgentRuntimeOptions.NormalizeOllamaThink(thinkSource);
         if (think != "off" && SupportsThinking(model))
         {
             options.AddOllamaOption(
@@ -47,7 +59,17 @@ internal static class LocalOllamaOptionsFactory
     {
         var contextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(runtime.OllamaContextTokens);
         var outputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(requestedMaxOutputTokens);
-        var think = AgentRuntimeOptions.NormalizeOllamaThink(runtime.OllamaThink);
+        var modelName = NormalizeModelName(model);
+        var stepModelName = NormalizeModelName(runtime.StepExtractorModel);
+        var envModelName = NormalizeModelName(runtime.EnvTesterModel);
+
+        var thinkSource = string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
+            ? runtime.OllamaThinkStepExtractor
+            : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
+                ? runtime.OllamaThinkEnvTester
+                : runtime.OllamaThink;
+
+        var think = AgentRuntimeOptions.NormalizeOllamaThink(thinkSource);
         var effectiveThink = think == "off" || !SupportsThinking(model)
             ? "off"
             : RequiresThinkingLevel(model) ? think : "on";

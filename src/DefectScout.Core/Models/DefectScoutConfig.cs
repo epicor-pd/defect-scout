@@ -67,7 +67,14 @@ public class AgentRuntimeOptions
     public int OllamaMaxOutputTokens { get; set; } = DefaultOllamaMaxOutputTokens;
 
     [JsonPropertyName("ollamaThink")]
+    [Obsolete("Use OllamaThinkStepExtractor and OllamaThinkEnvTester instead. Will be used as fallback.")]
     public string OllamaThink { get; set; } = DefaultOllamaThink;
+
+    [JsonPropertyName("ollamaThinkStepExtractor")]
+    public string OllamaThinkStepExtractor { get; set; } = DefaultOllamaThink;
+
+    [JsonPropertyName("ollamaThinkEnvTester")]
+    public string OllamaThinkEnvTester { get; set; } = DefaultOllamaThink;
 
     [JsonIgnore]
     public bool IsLocalOllama =>

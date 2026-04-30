@@ -54,7 +54,9 @@
     "maxToolIterations": 80,
     "ollamaContextTokens": 8192,
     "ollamaMaxOutputTokens": 4096,
-    "ollamaThink": "low"
+    "ollamaThink": "low",
+    "ollamaThinkStepExtractor": "low",
+    "ollamaThinkEnvTester": "low"
   },
 
   "playwright": {

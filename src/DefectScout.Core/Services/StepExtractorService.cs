@@ -45,7 +45,8 @@ public sealed class StepExtractorService : IStepExtractorService
 
         progress?.Report("Connecting to GitHub Copilot...");
 
-        await using var client = new CopilotClient(CliLocator.BuildClientOptions());
+        var clientOptions = await Task.Run(() => CliLocator.BuildClientOptions());
+        await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
 
         await using var session = await client.CreateSessionAsync(new SessionConfig
