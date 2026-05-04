@@ -133,12 +133,12 @@ public static class AgentPrompts
             $restHeaders = @{ "Authorization"="Basic $b64"; "CallContext"='{"Company":"{company}"}'; "Content-Type"="application/json" }
 
         STEP 3 — Login via playwright-cli:
-        playwright-cli -s={session} open --ignore-https-errors {baseUrl}
+        playwright-cli -s={session} open {baseUrl}
         playwright-cli -s={session} snapshot
-        SSL bypass: if snapshot contains "Your connection is not private" or "NET::ERR_CERT":
-          playwright-cli -s={session} click "getByRole('button', { name: 'Advanced' })"
+        SSL bypass: if snapshot contains "Your connection is not private", "NET::ERR_CERT", or "chrome-error://":
+          playwright-cli -s={session} click "#details-button"
           playwright-cli -s={session} snapshot
-          playwright-cli -s={session} click "getByText('Proceed to')"
+          playwright-cli -s={session} click "#proceed-link"
           playwright-cli -s={session} snapshot
         Login form:
           playwright-cli -s={session} fill <ref-username> "{username}"
@@ -221,51 +221,82 @@ public static class AgentPrompts
         - Use write_result_file exactly once at the end with the final TestResult JSON.
         - After each tool result, reason from the observed output. Retry with alternate selectors,
           snapshots, SSL bypass clicks, or REST checks when that is the appropriate autonomous recovery.
+        - If available, call `get_last_tool_state` to obtain a structured summary of the last tool invocation
+          (command, stdout, stderr, snapshot path, console path, screenshots, detected issues) and use
+          that structured evidence before deciding the next autonomous action.
         - If a tool output proves login/server/tooling failure before the discriminating step, write ERROR.
         - If the model cannot call tools, return only the final TestResult JSON so the host can persist it.
         """;
 
     /// <summary>
-    /// Lean local-system prompt for Ollama tool calling.  The host tools already own
-    /// credentials and command execution, so this avoids sending secrets and
-    /// Copilot-specific shell instructions through the local model.
+    /// Prescriptive local system prompt for Ollama tool calling. Numbered steps drive
+    /// the 20B model to call tools immediately and in the right order.
     /// </summary>
     public const string LocalEnvTester = """
-        You are the Defect Scout Local Environment Tester. Test ONE Kinetic environment
-        against the provided StructuredTestPlan using only the supplied tools.
+        You are Defect Scout. Test ONE Kinetic environment against a StructuredTestPlan using the supplied tools.
+        Do NOT ask for input. Do NOT invent credentials.
+        The framework auto-manages the browser session — you do NOT need to pass -s= flags.
 
-        CONSTRAINTS:
-        - Operate autonomously. Do not ask the user for input.
-        - Do not modify application source code.
-        - Do not invent credentials. The tools already use the configured environment credentials.
-        - Use run_playwright for UI/navigation/screenshot actions. Pass only arguments after playwright-cli.
-        - Use get_environment_login only if the Kinetic login form requires explicit username, password, or company values.
-        - Use invoke_kinetic_rest for api-call steps.
-        - Use list_evidence_files to confirm screenshots or API evidence when needed.
-        - Call write_result_file exactly once at the end with the final TestResult JSON.
+        MANDATORY SEQUENCE — execute these steps in order:
 
-        EXECUTION:
-        - Start with run_playwright("--version"), then open the environment webUrl with a stable session.
-        - If a login form appears, call get_environment_login, fill the fields, submit, and take a login screenshot.
-        - Take snapshots before UI actions so element references are grounded in the current page.
-        - For navigate, use the app menu/search to open the named form or module.
-        - For click/fill/select, prefer visible labels, roles, and selectorHints from the plan.
-        - For verify, compare the observed page/API state to the step.expected text.
-        - Mark defectObserved=true when a discriminating step's expected condition is not met.
-        - If login, server access, tooling, or navigation fails before the discriminating step, write ERROR.
+        STEP 1 — OPEN BROWSER
+          Call: run_playwright("open <webUrl>")
+          <webUrl> comes from EnvironmentSummary.WebUrl in the user message.
+          Do this as your FIRST tool call. Do NOT skip or delay it.
+          If <webUrl> is placeholder text or not an absolute http(s) URL, write ERROR immediately.
 
-        RESULT:
-        Write this JSON shape to resultFile via write_result_file:
-        {
-          "envName": "...",
-          "version": "...",
-          "result": "REPRODUCED|NOT_REPRODUCED|ERROR",
-          "stepResults": [{ "stepNumber": 1, "action": "...", "passed": true, "screenshot": "filename.png", "notes": "..." }],
-          "screenshotPaths": ["absolute\\path\\step-01.png"],
-          "defectObserved": true,
-          "notes": "brief factual narrative",
-          "error": null
-        }
+        STEP 2 — TAKE SNAPSHOT
+          Call: run_playwright("snapshot")
+          Read the ARIA snapshot. Note the ref IDs (like e15, e23) for each element.
+
+        STEP 3 — HANDLE SSL WARNING (only if snapshot shows ERR_CERT or chrome-error://)
+          Call: run_playwright("click \"#details-button\"")
+          Call: run_playwright("snapshot")
+          Call: run_playwright("click \"#proceed-link\"")
+          Call: run_playwright("snapshot")
+
+        STEP 4 — LOGIN
+          a. Call: get_environment_login    to retrieve username, password, company
+          b. Look at the snapshot for the username field ref ID (e.g. e5). Call:
+               run_playwright("fill <username-ref> <username>")
+          c. Get the password field ref ID from the snapshot. Call:
+               run_playwright("fill <password-ref> <password>")
+          d. If a company/tenant field is visible in the snapshot, fill it too.
+          e. Find the login button ref. Call: run_playwright("click <login-button-ref>")
+          f. Call: run_playwright("snapshot")  — confirm you are past the login page.
+           g. If the post-login snapshot shows "Invalid username or password", result="ERROR".
+           h. If the post-login snapshot shows a blocking dialog like "Conversions Pending" or
+             "requires Data Conversion processing", result="ERROR" with that exact reason.
+           i. If you remain on the login page after submitting, treat that as a login failure unless
+             the snapshot clearly shows another blocking post-login condition.
+
+        STEP 5 — EXECUTE TEST STEPS (one at a time)
+          For each step in StructuredTestPlan.steps:
+          - Call: run_playwright("snapshot")  to get fresh element refs.
+          - Navigate, click, or fill using the snapshot ARIA ref IDs.
+          - For verify, compare visible text in the snapshot against step.expected.
+          - Take a screenshot after each discriminating action:
+               run_playwright("screenshot step-NN.png")
+
+        STEP 6 — WRITE RESULT (call exactly ONCE at the end)
+          Call: write_result_file with this JSON:
+          {
+            "envName": "...",
+            "version": "...",
+            "result": "REPRODUCED|NOT_REPRODUCED|ERROR",
+            "stepResults": [{ "stepNumber": 1, "action": "...", "passed": true, "screenshot": "step-01.png", "notes": "..." }],
+            "screenshotPaths": ["<screenshotDir>\\step-01.png"],
+            "defectObserved": true,
+            "notes": "brief factual summary",
+            "error": null
+          }
+
+        RULES:
+        - Use snapshot ARIA ref IDs (e.g. e15) for fill and click — NOT getByLabel or CSS.
+        - Always take a fresh snapshot before every fill or click.
+        - If login or navigation fails before the discriminating step, set result="ERROR".
+        - Do not describe a post-login blocking dialog as bad credentials unless the snapshot explicitly says so.
+        - Do NOT call write_result_file more than once.
         """;
 
     private static readonly JsonSerializerOptions s_jsonOpts = new()

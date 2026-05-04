@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Threading;
 using System.Collections.Generic;
 using System.Linq;
@@ -20,6 +22,23 @@ internal sealed class LocalEnvTesterTools : IDisposable
     };
 
     private static readonly ILogger _log = AppLogger.For<LocalEnvTesterTools>();
+
+    private record ToolState
+    {
+        public string? Command { get; init; }
+        public bool Success { get; init; }
+        public int ExitCode { get; init; }
+        public string? Stdout { get; init; }
+        public string? Stderr { get; init; }
+        public string? SnapshotPath { get; init; }
+        public string? ConsolePath { get; init; }
+        public List<string>? ScreenshotPaths { get; init; }
+        public List<string>? DetectedIssues { get; init; }
+        public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
+    }
+
+    private ToolState? _lastToolState;
+    private readonly object _stateLock = new();
 
     private readonly KineticEnvironment _env;
     private readonly string _screenshotDir;
@@ -136,6 +155,13 @@ internal sealed class LocalEnvTesterTools : IDisposable
                     Name = "get_latest_screenshot",
                     Description = "Returns the latest screenshot file path from the screenshot directory, if any.",
                 }),
+            AIFunctionFactory.Create(
+                (Func<string>)GetLastToolState,
+                new AIFunctionFactoryOptions
+                {
+                    Name = "get_last_tool_state",
+                    Description = "Returns the structured last tool invocation state (command, stdout, stderr, snapshots, screenshots, detected issues).",
+                }),
         };
 
         _log.Debug("[{Env}] Created {Count} tools", _env?.Name, tools.Count);
@@ -156,6 +182,43 @@ internal sealed class LocalEnvTesterTools : IDisposable
 
         _log.Debug("[{Env}] get_environment_login produced JSON length {Len}", _env?.Name, json?.Length ?? 0);
         return json;
+    }
+
+    public async Task<string?> ProbeBrowserLoginFailureAsync()
+    {
+        var webUrlValidationError = ValidateConfiguredWebUrl();
+        if (!string.IsNullOrWhiteSpace(webUrlValidationError))
+            return webUrlValidationError;
+
+        if (string.IsNullOrWhiteSpace(_env?.Username) || string.IsNullOrWhiteSpace(_env?.Password))
+            return null;
+
+        var tokenUri = TryBuildTokenResourceUri();
+        if (tokenUri is null)
+            return null;
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, tokenUri);
+            var bytes = Encoding.ASCII.GetBytes($"{_env.Username}:{_env.Password}");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(bytes));
+            request.Headers.Accept.ParseAdd("application/json");
+
+            using var response = await _httpClient.SendAsync(request, _ct);
+            var body = await response.Content.ReadAsStringAsync(_ct);
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized &&
+                body.Contains("Invalid username or password", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"Configured browser login was rejected by {tokenUri} (HTTP 401 Invalid username or password). The Kinetic browser login flow uses username/password, not apiKey.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Debug(ex, "[{Env}] Browser login probe failed for {Uri}", _env?.Name, tokenUri);
+        }
+
+        return null;
     }
 
     public async Task<string> RunPlaywrightAsync(string arguments)
@@ -227,7 +290,13 @@ internal sealed class LocalEnvTesterTools : IDisposable
             }
 
             // Reconstruct args from normalized tokens for downstream processing.
-            args = string.Join(" ", tokens.Select(t => t.Contains(' ') ? "\"" + t + "\"" : t));
+            // Tokens starting with '#' must be double-quoted: PowerShell treats '#' as a
+            // comment character in mid-line command arguments, so `click #details-button`
+            // silently drops the target. Similarly quote '$' (variable expansion risk).
+            args = string.Join(" ", tokens.Select(t =>
+                (t.Contains(' ') || t.StartsWith("#") || t.StartsWith("$"))
+                ? "\"" + t + "\""
+                : t));
 
             var knownCommands = new[] { "open", "goto", "click", "fill", "screenshot", "snapshot", "type", "select", "upload", "check", "uncheck", "hover", "dblclick" };
             var primaryCmd = FindPrimaryCommandFromTokens(tokens, knownCommands) ?? cmdName;
@@ -251,17 +320,25 @@ internal sealed class LocalEnvTesterTools : IDisposable
                         .Where(t => !string.Equals(t, "open", StringComparison.OrdinalIgnoreCase))
                         .ToList();
 
-                    // Sanitize tokens: remove unsupported flags and extract any --url value
+                    // Sanitize tokens: only permit the flags that playwright-cli open actually
+                    // accepts (whitelist). Anything else — including --ignore-https-errors,
+                    // --ignore-certificate-errors, --no-sandbox, --headless, etc. — is stripped
+                    // to prevent "Unknown option" failures. SSL bypass is handled via the
+                    // .playwright/cli.config.json file written by EnsurePlaywrightConfigAsync().
                     string positionalUrl = string.Empty;
                     var sanitizedTokens = new List<string>();
+                    var knownOpenFlags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                        { "browser", "config", "headed", "persistent", "profile" };
+
                     for (int i = 0; i < remTokens.Count; i++)
                     {
                         var t = remTokens[i];
                         if (string.IsNullOrWhiteSpace(t)) continue;
-                        if ((t.StartsWith("--", StringComparison.Ordinal) || t.StartsWith("-", StringComparison.Ordinal)))
+                        if (t.StartsWith("-", StringComparison.Ordinal))
                         {
-                            var lower = t.ToLowerInvariant();
-                            if (lower.StartsWith("--url"))
+                            var stripped = t.TrimStart('-').ToLowerInvariant();
+                            // Extract --url=<value> (or --url <value>) as the positional URL.
+                            if (stripped.StartsWith("url"))
                             {
                                 var eq = t.IndexOf('=');
                                 if (eq >= 0)
@@ -276,29 +353,13 @@ internal sealed class LocalEnvTesterTools : IDisposable
                                 }
                                 continue;
                             }
-
-                            if (lower.StartsWith("--browser-type") || string.Equals(lower, "--browser-type", StringComparison.OrdinalIgnoreCase))
+                            // Only known-good flags are forwarded to playwright-cli open.
+                            var flagName = stripped.Contains('=') ? stripped[..stripped.IndexOf('=')] : stripped;
+                            if (!knownOpenFlags.Contains(flagName))
                             {
-                                if (!t.Contains('=') && i + 1 < remTokens.Count && !remTokens[i + 1].StartsWith("-")) i++;
-                                continue;
-                            }
-
-                            if (lower.StartsWith("--headless") || string.Equals(lower, "--headless", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (!t.Contains('=') && i + 1 < remTokens.Count && !remTokens[i + 1].StartsWith("-")) i++;
-                                continue;
-                            }
-
-                            if (lower.StartsWith("--timeout") || string.Equals(lower, "--timeout", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (!t.Contains('=') && i + 1 < remTokens.Count && !remTokens[i + 1].StartsWith("-")) i++;
-                                continue;
-                            }
-
-                            if (lower.StartsWith("--ignore-https-errors") || string.Equals(lower, "--ignore-https-errors", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // Drop original ignore flags; we'll add canonical ignore flag if supported.
-                                if (!t.Contains('=') && i + 1 < remTokens.Count && !remTokens[i + 1].StartsWith("-")) i++;
+                                // Skip the associated value token if flag is in --key value form.
+                                if (!t.Contains('=') && i + 1 < remTokens.Count && !remTokens[i + 1].StartsWith("-"))
+                                    i++;
                                 continue;
                             }
                         }
@@ -321,20 +382,79 @@ internal sealed class LocalEnvTesterTools : IDisposable
                     var openArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") +
                                    "open " + ignoreFlag + (string.IsNullOrWhiteSpace(remainderSanitized) ? string.Empty : remainderSanitized);
 
+                    // Pre-write playwright config for SSL bypass (ignoreHTTPSErrors).
+                    await EnsurePlaywrightConfigAsync();
+
                     var openCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {openArgs}";
                     _report($"(open-via-helper) playwright-cli {openArgs}");
-                    var openRes = await LocalProcessRunner.RunPowerShellAsync(openCmd, _screenshotDir, _operationTimeout, _ct);
+                    string executedOpenCmd = openCmd;
+                    var openRes = await LocalProcessRunner.RunPowerShellAsync(executedOpenCmd, _screenshotDir, _operationTimeout, _ct);
                     if (LooksLikeCommandMissing(openRes))
                     {
-                        var fallback = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {openArgs}";
+                        executedOpenCmd = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {openArgs}";
                         _report($"npx playwright-cli {openArgs}");
-                        openRes = await LocalProcessRunner.RunPowerShellAsync(fallback, _screenshotDir, _operationTimeout, _ct);
+                        openRes = await LocalProcessRunner.RunPowerShellAsync(executedOpenCmd, _screenshotDir, _operationTimeout, _ct);
                     }
+
+                    UpdateLastToolState(executedOpenCmd, openRes);
 
                     if (openRes.IsSuccess)
                     {
                         _sessionOpened = true;
-                        var outText = Limit(openRes.ToToolOutput(), 12000);
+                        var outText = openRes.ToToolOutput();
+
+                        // playwright-cli returns a file-reference snapshot "[Snapshot](...yml)"
+                        // after open <url> instead of inline ARIA. The model cannot read page
+                        // structure from a file-ref, so immediately fetch the real inline snapshot.
+                        if (!string.IsNullOrWhiteSpace(positionalUrl) &&
+                            outText.Contains("[Snapshot]", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var snapArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "snapshot";
+                                var snapCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {snapArgs}";
+                                _report($"(auto-snapshot after open) playwright-cli {snapArgs}");
+                                var snapRes = await LocalProcessRunner.RunPowerShellAsync(snapCmd, _screenshotDir, _operationTimeout, _ct);
+                                if (snapRes.IsSuccess && !ContainsPlaywrightOutputError(snapRes))
+                                {
+                                    var snapText = snapRes.ToToolOutput();
+                                    if (!string.IsNullOrWhiteSpace(snapText))
+                                    {
+                                        // If the snapshot reveals the Chrome SSL interstitial, auto-bypass it
+                                        // so the model never sees the interstitial page.
+                                        if (snapText.Contains("chrome-error://", StringComparison.OrdinalIgnoreCase) ||
+                                            snapText.Contains("ERR_CERT", StringComparison.OrdinalIgnoreCase) ||
+                                            snapText.Contains("Your connection is not private", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            _report("(auto-ssl-bypass) Chrome SSL interstitial detected after open — clicking #details-button then #proceed-link");
+                                            foreach (var bypassStep in new[] { $"click \"#details-button\"", "snapshot", $"click \"#proceed-link\"", "snapshot" })
+                                            {
+                                                var bArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + bypassStep;
+                                                var bCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {bArgs}";
+                                                _report($"(auto-ssl-bypass) playwright-cli {bArgs}");
+                                                try
+                                                {
+                                                    var bRes = await LocalProcessRunner.RunPowerShellAsync(bCmd, _screenshotDir, _operationTimeout, _ct);
+                                                    UpdateLastToolState(bCmd, bRes);
+                                                    if (bypassStep.StartsWith("snapshot") && bRes.IsSuccess && !ContainsPlaywrightOutputError(bRes))
+                                                        snapText = bRes.ToToolOutput();
+                                                }
+                                                catch (Exception bex) { _report($"(auto-ssl-bypass) step failed: {bex.Message}"); }
+                                            }
+                                        }
+
+                                        outText = snapText;
+                                        _log.Debug("[{Env}] auto-snapshot after open replaced file-ref; snapshotLen={Len}", _env?.Name, snapText.Length);
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _report($"(auto-snapshot after open) failed: {ex.Message}");
+                            }
+                        }
+
+                        outText = Limit(outText, 12000);
                         _log.Debug("[{Env}] run_playwright(open) succeeded; session opened, outputLen={Len}", _env?.Name, outText.Length);
                         _report(outText);
                         return outText;
@@ -360,6 +480,12 @@ internal sealed class LocalEnvTesterTools : IDisposable
             {
                 if (commandsSupportingIgnore.Contains(primaryCmd))
                     args = args + " --ignore-https-errors";
+            }
+
+            // Ensure SSL-bypass config is written before any goto navigation (same as open).
+            if (primaryCmd == "goto")
+            {
+                await EnsurePlaywrightConfigAsync();
             }
 
             if (!IsSafePlaywrightArguments(args, out var error))
@@ -395,19 +521,318 @@ internal sealed class LocalEnvTesterTools : IDisposable
 
                 // Ensure the args are prefixed with the session option so Playwright's allowed-roots align
                 args = PrependSessionIfMissing(args);
+
+                // Normalize common selector shorthand and malformed selector expressions
+                // (e.g. `click button=Login` -> `click getByRole('button', { name: 'Login' })`)
+                args = NormalizeClickShorthand(args);
+                args = NormalizeSelectorExpressions(args);
             }
 
             var command = $"$ErrorActionPreference = 'Continue'; playwright-cli {args}";
             _report($"playwright-cli {args}");
 
-            var result = await LocalProcessRunner.RunPowerShellAsync(command, _screenshotDir, _operationTimeout, _ct);
+            // Normalize compact `fill` invocations (key=value pairs) into multiple
+            // Playwright `fill` commands with selector heuristics. This prevents errors
+            // like "too many arguments: expected 2" when the model emits `fill a=1 b=2`.
+            // IMPORTANT: check tokens AFTER the fill command rather than the full args string.
+            // The full string contains the prepended -s=SESSION option whose '=' would
+            // incorrectly trigger multi-fill for simple `fill refId value` commands.
+            var fillCheckIdx = tokens.FindIndex(t => string.Equals(t.Trim('"', '\''), "fill", StringComparison.OrdinalIgnoreCase));
+            bool hasKeyValuePairs = fillCheckIdx >= 0 &&
+                tokens.Skip(fillCheckIdx + 1)
+                      .Any(t => t.Contains('=') && !Regex.IsMatch(t, @"^-s=", RegexOptions.IgnoreCase));
+            if (string.Equals(primaryCmd, "fill", StringComparison.OrdinalIgnoreCase) && hasKeyValuePairs)
+            {
+                // Parse key=value tokens from the tokenized args rather than a complex regex.
+                var pairs = new List<(string key, string value)>();
+                var fillIndex = tokens.FindIndex(t => string.Equals(t.Trim('"', '\''), "fill", StringComparison.OrdinalIgnoreCase));
+                if (fillIndex >= 0)
+                {
+                    for (int i = fillIndex + 1; i < tokens.Count; i++)
+                    {
+                        var tok = tokens[i].Trim();
+                        if (string.Equals(tok, "submit", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (tok.Contains("="))
+                        {
+                            // CSS attribute selector=value: "input[name=username]=manager"
+                            // The selector ends at ']' and the value follows ']='.
+                            // Detect: the key contains '[' which means it's a CSS attribute selector.
+                            var cssValMatch = Regex.Match(tok, @"^(.+\])=(.*)$");
+                            if (cssValMatch.Success && cssValMatch.Groups[1].Value.Contains('['))
+                            {
+                                var selector = cssValMatch.Groups[1].Value; // e.g. input[name=username]
+                                var val = cssValMatch.Groups[2].Value.Trim('"', '\'');
+                                pairs.Add((selector, val));
+                                continue;
+                            }
+
+                            var parts = tok.Split(new[] { '=' }, 2);
+                            var key = parts[0];
+                            var valStr = parts.Length > 1 ? parts[1].Trim('"', '\'') : string.Empty;
+                            pairs.Add((key, valStr));
+                        }
+                    }
+                }
+
+                var wantsSubmit = Regex.IsMatch(args ?? string.Empty, "\\bsubmit\\b", RegexOptions.IgnoreCase);
+                CommandResult? aggregateResult = null;
+                bool allOk = true;
+                var sessionOpt = SessionOptionOrDefault(args);
+
+                // Take a LIVE snapshot of the current page — not a stale cached file — so that
+                // selector heuristics are grounded in what is actually visible right now.
+                string snapshotText = string.Empty;
+                try
+                {
+                    var liveSnapArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "snapshot";
+                    var liveSnapCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {liveSnapArgs}";
+                    var liveSnapRes = await LocalProcessRunner.RunPowerShellAsync(liveSnapCmd, _screenshotDir, _operationTimeout, _ct);
+                    if (liveSnapRes.IsSuccess && !ContainsPlaywrightOutputError(liveSnapRes))
+                        snapshotText = liveSnapRes.ToToolOutput() ?? string.Empty;
+                    else
+                        snapshotText = await ReadLatestSnapshotAsync() ?? string.Empty;
+                }
+                catch
+                {
+                    snapshotText = await ReadLatestSnapshotAsync() ?? string.Empty;
+                }
+
+                // If the page is blank / about:blank / too short to be a real page, navigate to
+                // the environment URL now before attempting any fills.
+                bool isBlankPage = string.IsNullOrWhiteSpace(snapshotText) ||
+                                   snapshotText.Contains("about:blank", StringComparison.OrdinalIgnoreCase) ||
+                                   snapshotText.Length < 120;
+                if (isBlankPage && !string.IsNullOrWhiteSpace(_env?.WebUrl))
+                {
+                    _report($"(multi-fill: blank page detected) navigating to environment URL before fills: {_env.WebUrl}");
+                    await EnsurePlaywrightConfigAsync();
+                    var navArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + $"goto {_env.WebUrl}";
+                    var navCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {navArgs}";
+                    var navRes = await LocalProcessRunner.RunPowerShellAsync(navCmd, _screenshotDir, _operationTimeout, _ct);
+                    UpdateLastToolState(navCmd, navRes);
+                    if (navRes.IsSuccess)
+                    {
+                        // Re-snapshot after navigation
+                        var snapAfterNav = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "snapshot";
+                        var snapNavCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {snapAfterNav}";
+                        var snapNavRes = await LocalProcessRunner.RunPowerShellAsync(snapNavCmd, _screenshotDir, _operationTimeout, _ct);
+                        if (snapNavRes.IsSuccess && !ContainsPlaywrightOutputError(snapNavRes))
+                        {
+                            var newSnap = snapNavRes.ToToolOutput() ?? string.Empty;
+                            // Auto-bypass SSL if needed
+                            if (newSnap.Contains("chrome-error://", StringComparison.OrdinalIgnoreCase) ||
+                                newSnap.Contains("ERR_CERT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _report("(multi-fill ssl-bypass) SSL interstitial after navigation");
+                                foreach (var step in new[] { "click \"#details-button\"", "snapshot", "click \"#proceed-link\"", "snapshot" })
+                                {
+                                    var bArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + step;
+                                    var bCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {bArgs}";
+                                    try
+                                    {
+                                        var bRes = await LocalProcessRunner.RunPowerShellAsync(bCmd, _screenshotDir, _operationTimeout, _ct);
+                                        if (step.StartsWith("snapshot") && bRes.IsSuccess) newSnap = bRes.ToToolOutput() ?? newSnap;
+                                    }
+                                    catch { }
+                                }
+                            }
+                            snapshotText = newSnap;
+                        }
+                    }
+                }
+
+                foreach (var (key, val) in pairs)
+                {
+                    var label = CultureInfo.CurrentCulture.TextInfo.ToTitleCase(key.Replace("-", " ").Replace("_", " "));
+                    var selectorsList = new List<string>();
+
+                    // When the key is already a CSS selector (contains '[', '.', '#', or is a
+                    // tag[attr=val] form), use it directly and also try a quoted attribute variant.
+                    // Skip the human-label heuristics entirely for CSS selectors.
+                    bool isCssSelector = key.Contains('[') || key.StartsWith('.') || key.StartsWith('#') ||
+                                         key.StartsWith("getBy") || key.StartsWith(">>") ||
+                                         Regex.IsMatch(key, @"^[a-z]+\[", RegexOptions.IgnoreCase);
+                    if (isCssSelector)
+                    {
+                        selectorsList.Add(key);
+                        // Also try quoting unquoted attribute values: input[name=username] → input[name='username']
+                        var quotedSelector = Regex.Replace(key, @"\[(\w+)=([^'\"">\]]+)\]", "[$1='$2']");
+                        if (quotedSelector != key) selectorsList.Add(quotedSelector);
+                    }
+                    else
+                    {
+                    // If we have a snapshot, prefer selectors that reference accessible names present in it.
+                    if (!string.IsNullOrWhiteSpace(snapshotText) &&
+                        !snapshotText.StartsWith("No ", StringComparison.OrdinalIgnoreCase) &&
+                        !snapshotText.StartsWith("Could not", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (snapshotText.IndexOf(label, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            selectorsList.Add($"getByLabel('{label}')");
+                            selectorsList.Add($"getByRole('textbox', {{ name: '{label}' }})");
+                            selectorsList.Add($"getByPlaceholder('{label}')");
+                        }
+
+                        if (snapshotText.IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            selectorsList.Add($"input[name=\"{key}\"]");
+                            selectorsList.Add($"input[id=\"{key}\"]");
+                        }
+                    }
+
+                    // Always include sensible fallbacks (preserve order and avoid duplicates).
+                    var fallbacks = new[]
+                    {
+                        $"getByLabel('{label}')",
+                        $"getByRole('textbox', {{ name: '{label}' }})",
+                        $"getByPlaceholder('{label}')",
+                        $"input[name=\"{key}\"]",
+                        $"input[id=\"{key}\"]",
+                        $"[aria-label=\"{label}\"]",
+                    };
+
+                    foreach (var f in fallbacks)
+                    {
+                        if (!selectorsList.Contains(f)) selectorsList.Add(f);
+                    }
+                    } // end else (not a CSS selector)
+
+                    bool filled = false;
+                    foreach (var sel in selectorsList)
+                    {
+                        var escapedVal = val.Replace("\"", "\\\"");
+                        var fillArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + $"fill \"{sel}\" \"{escapedVal}\"";
+                        var fillCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {fillArgs}";
+                        var fillRes = await LocalProcessRunner.RunPowerShellAsync(fillCmd, _screenshotDir, _operationTimeout, _ct);
+                        UpdateLastToolState(fillCmd, fillRes);
+                        if (fillRes.IsSuccess && !ContainsPlaywrightOutputError(fillRes))
+                        {
+                            aggregateResult = fillRes;
+                            filled = true;
+                            break;
+                        }
+
+                        if (LooksLikeCommandMissing(fillRes))
+                        {
+                            var fb = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {fillArgs}";
+                            fillRes = await LocalProcessRunner.RunPowerShellAsync(fb, _screenshotDir, _operationTimeout, _ct);
+                            UpdateLastToolState(fb, fillRes);
+                            if (fillRes.IsSuccess && !ContainsPlaywrightOutputError(fillRes))
+                            {
+                                aggregateResult = fillRes;
+                                filled = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!filled)
+                    {
+                        try
+                        {
+                            // Attempt DOM-eval fallback to set the field value directly when
+                            // Playwright refs/selectors did not match. This evaluates a small
+                            // JS snippet in the page that searches for input/textarea by
+                            // name/id/placeholder/aria-label and sets the `value`.
+                            var sanitizedSelectors = selectorsList.Select(s => s.Replace("'", "\"")).ToList();
+                            var selectorsArray = string.Join(",", sanitizedSelectors.Select(s => JsonSerializer.Serialize(s)));
+                            var js = "(async () => { const v = " + JsonSerializer.Serialize(val) + "; const selectors = [" + selectorsArray + "]; for (let i = 0; i < selectors.length; i++) { const q = selectors[i]; const el = document.querySelector(q); if (el) { if (el.focus) el.focus(); el.value = v; el.dispatchEvent(new Event(\"input\", {bubbles:true})); return \"FILLED:\" + q; } } return \"NOT_FOUND\"; })()";
+
+                            // Escape single quotes for PowerShell single-quoted literal
+                            var jsForPowerShell = js.Replace("'", "''");
+                            var evalArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + $"eval '{jsForPowerShell}'";
+                            var evalCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {evalArgs}";
+                            var evalRes = await LocalProcessRunner.RunPowerShellAsync(evalCmd, _screenshotDir, _operationTimeout, _ct);
+                            UpdateLastToolState(evalCmd, evalRes);
+                            if (evalRes.IsSuccess && (evalRes.StandardOutput?.Contains("FILLED:") == true))
+                            {
+                                aggregateResult = evalRes;
+                                filled = true;
+                            }
+                        }
+                        catch { }
+
+                        if (!filled) allOk = false;
+                    }
+                }
+
+                if (wantsSubmit)
+                {
+                    // playwright-cli exits 0 even when an element is not found; always check
+                    // output content so we don't falsely break on "exit 0 + ### Error" output.
+                    var submitSelectors = new[]
+                    {
+                        "getByRole('button', { name: 'Login' })",
+                        "getByRole('button', { name: 'Sign In' })",
+                        "getByRole('button', { name: 'Sign in' })",
+                        "getByRole('button', { name: 'Submit' })",
+                        "button[type='submit']",
+                        "input[type='submit']",
+                        "getByText('Login')",
+                        "getByText('Sign in')",
+                        "getByText('Submit')",
+                    };
+
+                    foreach (var s in submitSelectors)
+                    {
+                        var clickArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + $"click \"{s}\"";
+                        var clickCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {clickArgs}";
+                        var clickRes = await LocalProcessRunner.RunPowerShellAsync(clickCmd, _screenshotDir, _operationTimeout, _ct);
+                        UpdateLastToolState(clickCmd, clickRes);
+                        if (clickRes.IsSuccess && !ContainsPlaywrightOutputError(clickRes))
+                        {
+                            aggregateResult = clickRes;
+                            break;
+                        }
+
+                        if (LooksLikeCommandMissing(clickRes))
+                        {
+                            var fb = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {clickArgs}";
+                            clickRes = await LocalProcessRunner.RunPowerShellAsync(fb, _screenshotDir, _operationTimeout, _ct);
+                            UpdateLastToolState(fb, clickRes);
+                            if (clickRes.IsSuccess && !ContainsPlaywrightOutputError(clickRes))
+                            {
+                                aggregateResult = clickRes;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (aggregateResult is not null && aggregateResult.IsSuccess && allOk)
+                {
+                    if (_opts?.ScreenshotOnStep == true)
+                    {
+                        var fileName = MakeAutoScreenshotFileName();
+                        var shotArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + $"screenshot --filename=\"{Path.Combine(_screenshotDir, fileName)}\"";
+                        var shotCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {shotArgs}";
+                        var shotRes = await LocalProcessRunner.RunPowerShellAsync(shotCmd, _screenshotDir, _operationTimeout, _ct);
+                        UpdateLastToolState(shotCmd, shotRes);
+                    }
+
+                    var outText = Limit(aggregateResult.ToToolOutput(), 12000);
+                    _report(outText);
+                    return outText;
+                }
+
+                lastResult = aggregateResult;
+                lastOutput = aggregateResult?.ToToolOutput() ?? string.Empty;
+                _report($"Playwright multi-fill attempts produced: {Limit(lastOutput, 2000)}");
+                continue;
+            }
+
+            string executedCmd = command;
+            var result = await LocalProcessRunner.RunPowerShellAsync(executedCmd, _screenshotDir, _operationTimeout, _ct);
             if (LooksLikeCommandMissing(result) && !triedNpxFallback)
             {
                 triedNpxFallback = true;
-                var fallback = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {args}";
+                executedCmd = $"$ErrorActionPreference = 'Continue'; npx playwright-cli {args}";
                 _report($"npx playwright-cli {args}");
-                result = await LocalProcessRunner.RunPowerShellAsync(fallback, _screenshotDir, _operationTimeout, _ct);
+                result = await LocalProcessRunner.RunPowerShellAsync(executedCmd, _screenshotDir, _operationTimeout, _ct);
             }
+
+            UpdateLastToolState(executedCmd, result);
 
             var combinedOut = result.StandardOutput + "\n" + result.StandardError;
             lastResult = result;
@@ -417,6 +842,8 @@ internal sealed class LocalEnvTesterTools : IDisposable
             {
                 // Always attempt an automatic screenshot after actions when configured.
                 string autoShotOutput = string.Empty;
+                string inlineSnapshotOutput = string.Empty;
+                string delayedLoginSnapshotOutput = string.Empty;
                 try
                 {
                     if (_opts?.ScreenshotOnStep == true &&
@@ -445,7 +872,34 @@ internal sealed class LocalEnvTesterTools : IDisposable
                         _report($"(auto-screenshot) playwright-cli {shotArgs}");
                         var shotRes = await LocalProcessRunner.RunPowerShellAsync(shotCmd, _screenshotDir, _operationTimeout, _ct);
                         autoShotOutput = Limit(shotRes.ToToolOutput(), 8000);
+                        UpdateLastToolState(shotCmd, shotRes);
                         _report(autoShotOutput);
+                    }
+
+                    if (!Regex.IsMatch(args ?? string.Empty, "(^|\\s)(snapshot|screenshot)(\\s|$)", RegexOptions.IgnoreCase) &&
+                        ContainsSnapshotFileReference(result.ToToolOutput()))
+                    {
+                        var sessionOpt = SessionOptionOrDefault(args);
+                        var liveSnapshot = await TryCaptureInlineSnapshotAsync(sessionOpt, "auto-inline-snapshot");
+                        if (!string.IsNullOrWhiteSpace(liveSnapshot))
+                        {
+                            inlineSnapshotOutput = Limit(liveSnapshot, 8000);
+                            _report(inlineSnapshotOutput);
+                        }
+                    }
+
+                    if (string.Equals(primaryCmd, "click", StringComparison.OrdinalIgnoreCase) &&
+                        LooksLikeLoginSubmit(result.ToToolOutput()))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(2), _ct);
+                        var sessionOpt = SessionOptionOrDefault(args);
+                        var delayedSnapshot = await TryCaptureInlineSnapshotAsync(sessionOpt, "post-login-check");
+                        if (!string.IsNullOrWhiteSpace(delayedSnapshot) &&
+                            ContainsPostLoginSignal(delayedSnapshot))
+                        {
+                            delayedLoginSnapshotOutput = Limit(delayedSnapshot, 8000);
+                            _report(delayedLoginSnapshotOutput);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -455,6 +909,8 @@ internal sealed class LocalEnvTesterTools : IDisposable
 
                 var composed = result.ToToolOutput();
                 if (!string.IsNullOrEmpty(autoShotOutput)) composed += "\n\n" + autoShotOutput;
+                if (!string.IsNullOrEmpty(inlineSnapshotOutput)) composed += "\n\n" + inlineSnapshotOutput;
+                if (!string.IsNullOrEmpty(delayedLoginSnapshotOutput)) composed += "\n\n" + delayedLoginSnapshotOutput;
                 var output = Limit(composed, 12000);
                 _log.Debug("[{Env}] run_playwright command succeeded; args={Args}, outputLen={Len}", _env?.Name, Limit(args ?? string.Empty, 200), output.Length);
                 _report(output);
@@ -511,17 +967,26 @@ internal sealed class LocalEnvTesterTools : IDisposable
                 }
             }
 
-            // Unknown option errors for unsupported flags (e.g., --ignore-https-errors on `open`)
-            if (combinedOut.Contains("Unknown option: --ignore-https-errors", StringComparison.OrdinalIgnoreCase) ||
-                combinedOut.Contains("unknown option --ignore-https-errors", StringComparison.OrdinalIgnoreCase))
+            // Unknown option error — extract the unsupported flag from the error message and
+            // strip it so we can retry. This handles any flag generically
+            // (--ignore-https-errors, --ignore-certificate-errors, --no-sandbox, etc.).
+            var unknownOptMatch = Regex.Match(combinedOut,
+                @"Unknown option:?\s*(--[\w-]+)", RegexOptions.IgnoreCase);
+            if (!unknownOptMatch.Success)
+                unknownOptMatch = Regex.Match(combinedOut,
+                    @"unknown option\s+(--[\w-]+)", RegexOptions.IgnoreCase);
+            if (unknownOptMatch.Success && !removedIgnoreFlag)
             {
-                if (!removedIgnoreFlag)
-                {
-                    removedIgnoreFlag = true;
-                    args = Regex.Replace(args, "--ignore-https-errors(?:=[^\\s]+)?", "", RegexOptions.IgnoreCase).Trim();
-                    _report("Removed unsupported --ignore-https-errors flag and will retry.");
-                    continue;
-                }
+                removedIgnoreFlag = true;
+                var badFlag = unknownOptMatch.Groups[1].Value;
+                args = Regex.Replace(args, Regex.Escape(badFlag) + @"(?:=[^\s]+)?", "", RegexOptions.IgnoreCase).Trim();
+                // Strip the --no-xxx / --xxx counterpart when applicable.
+                var noCounterpart = badFlag.StartsWith("--no-", StringComparison.OrdinalIgnoreCase)
+                    ? "--" + badFlag[5..]
+                    : "--no-" + badFlag[2..];
+                args = Regex.Replace(args, Regex.Escape(noCounterpart) + @"(?:=[^\s]+)?", "", RegexOptions.IgnoreCase).Trim();
+                _report($"Removed unsupported flag '{badFlag}' and will retry.");
+                continue;
             }
 
             // Not resolved: log and optionally take failure screenshot, then retry until attempts exhausted.
@@ -536,8 +1001,9 @@ internal sealed class LocalEnvTesterTools : IDisposable
                     var shotArgs = (($"{sessionOpt} ") + $"screenshot --filename=\"{Path.Combine(_screenshotDir, fileName)}\"").Trim();
                     var shotCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {shotArgs}";
                     _report($"(failure-screenshot) playwright-cli {shotArgs}");
-                    var shotRes = await LocalProcessRunner.RunPowerShellAsync(shotCmd, _screenshotDir, _operationTimeout, _ct);
-                    _report(Limit(shotRes.ToToolOutput(), 8000));
+                        var shotRes = await LocalProcessRunner.RunPowerShellAsync(shotCmd, _screenshotDir, _operationTimeout, _ct);
+                        UpdateLastToolState(shotCmd, shotRes);
+                        _report(Limit(shotRes.ToToolOutput(), 8000));
                 }
             }
             catch (Exception ex)
@@ -612,6 +1078,12 @@ internal sealed class LocalEnvTesterTools : IDisposable
                 """;
             _log.Debug("[{Env}] invoke_kinetic_rest response: status={Status} evidence={Evidence}", _env?.Name, (int)response.StatusCode, savedPath);
             _report(output);
+            try
+            {
+                var pseudo = new CommandResult(response.IsSuccessStatusCode ? 0 : (int)response.StatusCode, text ?? string.Empty, string.Empty, TimedOut: false);
+                UpdateLastToolState($"REST {method} {requestUri}", pseudo);
+            }
+            catch { }
             return output;
         }
         catch (Exception ex)
@@ -678,6 +1150,95 @@ internal sealed class LocalEnvTesterTools : IDisposable
         return JsonSerializer.Serialize(files, s_jsonOpts);
     }
 
+    public string GetLastToolState()
+    {
+        lock (_stateLock)
+        {
+            if (_lastToolState is null)
+            {
+                return JsonSerializer.Serialize(new { message = "no tool state available" }, s_jsonOpts);
+            }
+
+            try
+            {
+                return JsonSerializer.Serialize(_lastToolState, s_jsonOpts);
+            }
+            catch (Exception ex)
+            {
+                _report($"Could not serialize last tool state: {ex.Message}");
+                return JsonSerializer.Serialize(new { message = "could not serialize tool state" }, s_jsonOpts);
+            }
+        }
+    }
+
+    private void UpdateLastToolState(string command, CommandResult? result)
+    {
+        try
+        {
+            var screenshots = ListEvidencePaths("*.png").ToList();
+            string? snapshot = null;
+            string? console = null;
+            var dir = Path.Combine(_screenshotDir, ".playwright-cli");
+            if (Directory.Exists(dir))
+            {
+                snapshot = Directory.EnumerateFiles(dir, "page-*.yml").OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+                console = Directory.EnumerateFiles(dir, "console-*.log").OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
+            }
+
+            var combined = result is not null ? (result.StandardOutput + "\n" + result.StandardError) : string.Empty;
+            var detected = new List<string>();
+            if (!string.IsNullOrWhiteSpace(combined))
+            {
+                if (combined.Contains("ERR_CERT", StringComparison.OrdinalIgnoreCase) ||
+                    combined.Contains("Your connection is not private", StringComparison.OrdinalIgnoreCase) ||
+                    combined.Contains("NET::ERR_CERT_AUTHORITY_INVALID", StringComparison.OrdinalIgnoreCase))
+                    detected.Add("CERT_ERROR");
+
+                if (combined.Contains("Browser '", StringComparison.OrdinalIgnoreCase) && combined.Contains("is not open", StringComparison.OrdinalIgnoreCase))
+                    detected.Add("BROWSER_CLOSED");
+
+                if (combined.Contains("not recognized", StringComparison.OrdinalIgnoreCase) ||
+                    combined.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+                    combined.Contains("CommandNotFoundException", StringComparison.OrdinalIgnoreCase))
+                    detected.Add("COMMAND_MISSING");
+
+                if (result?.TimedOut == true)
+                    detected.Add("TIMED_OUT");
+            }
+
+            var state = new ToolState
+            {
+                Command = Limit(command ?? string.Empty, 1000),
+                Success = result?.IsSuccess ?? false,
+                ExitCode = result?.ExitCode ?? -1,
+                Stdout = Limit(result?.StandardOutput ?? string.Empty, 20000),
+                Stderr = Limit(result?.StandardError ?? string.Empty, 20000),
+                SnapshotPath = snapshot,
+                ConsolePath = console,
+                ScreenshotPaths = screenshots,
+                DetectedIssues = detected,
+                Timestamp = DateTimeOffset.UtcNow
+            };
+
+            _log.Debug("[{Env}] UpdateLastToolState: cmd={Cmd}, success={Success}, issues={Issues}, snaps={Snap}, shots={Shots}",
+                _env?.Name,
+                Limit(state.Command ?? string.Empty, 200),
+                state.Success,
+                state.DetectedIssues is null ? 0 : state.DetectedIssues.Count,
+                state.SnapshotPath ?? "(none)",
+                state.ScreenshotPaths?.Count ?? 0);
+
+            lock (_stateLock)
+            {
+                _lastToolState = state;
+            }
+        }
+        catch (Exception ex)
+        {
+            _report($"UpdateLastToolState failed: {ex.Message}");
+        }
+    }
+
     public void Dispose()
     {
         // Close the Playwright session asynchronously so Dispose does not block the UI thread.
@@ -702,6 +1263,87 @@ internal sealed class LocalEnvTesterTools : IDisposable
     {
         var args = (arguments ?? string.Empty).Trim();
         args = Regex.Replace(args, @"^(npx\s+)?playwright-cli\s+", "", RegexOptions.IgnoreCase);
+        return args;
+    }
+
+    private static string NormalizeClickShorthand(string args)
+    {
+        if (string.IsNullOrWhiteSpace(args)) return args;
+        try
+        {
+            // click button=Login  -> click getByRole('button', { name: 'Login' })
+            args = Regex.Replace(args,
+                "\\bclick\\s+button\\s*=\\s*(?:\\\"([^\\\"]+)\\\"|'([^']+)'|([^\\s]+))",
+                m =>
+                {
+                    var name = m.Groups[1].Success ? m.Groups[1].Value : (m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value);
+                    return $"click getByRole('button', {{ name: '{name}' }})";
+                },
+                RegexOptions.IgnoreCase);
+
+            // click button:Login -> click getByRole('button', { name: 'Login' })
+            args = Regex.Replace(args,
+                "\\bclick\\s+button\\s*:\\s*(?:\\\"([^\\\"]+)\\\"|'([^']+)'|([^\\s]+))",
+                m =>
+                {
+                    var name = m.Groups[1].Success ? m.Groups[1].Value : (m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value);
+                    return $"click getByRole('button', {{ name: '{name}' }})";
+                },
+                RegexOptions.IgnoreCase);
+        }
+        catch { }
+        return args;
+    }
+
+    private static string NormalizeSelectorExpressions(string args)
+    {
+        if (string.IsNullOrWhiteSpace(args)) return args;
+        try
+        {
+            // Normalize getByRole(...) content to ensure the role and name are quoted
+            args = Regex.Replace(args, @"getByRole\(([^)]*)\)", m =>
+            {
+                var inner = m.Groups[1].Value;
+                // Split by first comma to separate role and options
+                var idx = inner.IndexOf(',');
+                string rolePart = inner, optsPart = null;
+                if (idx >= 0)
+                {
+                    rolePart = inner.Substring(0, idx).Trim();
+                    optsPart = inner.Substring(idx + 1).Trim();
+                }
+
+                if (!(rolePart.StartsWith("\"") || rolePart.StartsWith("'")))
+                    rolePart = $"'{rolePart.Trim()}'";
+
+                if (!string.IsNullOrWhiteSpace(optsPart))
+                {
+                    // Ensure name:value becomes name: 'value'
+                    optsPart = Regex.Replace(optsPart, "name\\s*:\\s*(?:'([^']*)'|\\\"([^\\\"]*)\\\"|([^,}\\s]+))",
+                        "name: '$1$2$3'", RegexOptions.IgnoreCase);
+                    return $"getByRole({rolePart}, {optsPart})";
+                }
+
+                return $"getByRole({rolePart})";
+            }, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            // Ensure getByLabel/getByText/getByPlaceholder args are quoted when missing
+            args = Regex.Replace(args, @"getByLabel\(([^)]+)\)", m =>
+            {
+                var v = m.Groups[1].Value.Trim();
+                if (!(v.StartsWith("\"") || v.StartsWith("'"))) v = $"'{v}'";
+                return $"getByLabel({v})";
+            }, RegexOptions.IgnoreCase);
+
+            args = Regex.Replace(args, @"getByText\(([^)]+)\)", m =>
+            {
+                var v = m.Groups[1].Value.Trim();
+                if (!(v.StartsWith("\"") || v.StartsWith("'"))) v = $"'{v}'";
+                return $"getByText({v})";
+            }, RegexOptions.IgnoreCase);
+        }
+        catch { }
+
         return args;
     }
 
@@ -738,6 +1380,21 @@ internal sealed class LocalEnvTesterTools : IDisposable
                 combined.Contains("CommandNotFoundException", StringComparison.OrdinalIgnoreCase));
     }
 
+    /// <summary>
+    /// playwright-cli exits with code 0 even when a selector doesn't match or a page action
+    /// fails; the error is embedded in stdout as "### Error …".  Use this instead of
+    /// (or in addition to) <see cref="CommandResult.IsSuccess"/> when you need to distinguish
+    /// a genuine success from a playwright error returned with exit 0.
+    /// </summary>
+    private static bool ContainsPlaywrightOutputError(CommandResult result)
+    {
+        var stdout = result.StandardOutput ?? string.Empty;
+        return stdout.Contains("### Error", StringComparison.OrdinalIgnoreCase) ||
+               stdout.Contains("does not match any elements", StringComparison.OrdinalIgnoreCase) ||
+               stdout.Contains("locator.click: Timeout", StringComparison.OrdinalIgnoreCase) ||
+               stdout.Contains("locator.fill: Timeout", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsAllowedHttpMethod(string method) =>
         method is "GET" or "POST" or "PATCH" or "PUT" or "DELETE";
 
@@ -756,6 +1413,82 @@ internal sealed class LocalEnvTesterTools : IDisposable
 
         if (!string.IsNullOrWhiteSpace(_env.Company))
             request.Headers.TryAddWithoutValidation("CallContext", JsonSerializer.Serialize(new { _env.Company }));
+    }
+
+    private string? ValidateConfiguredWebUrl()
+    {
+        if (string.IsNullOrWhiteSpace(_env?.WebUrl))
+            return $"Environment '{_env?.Name}' is missing webUrl. Configure an absolute http(s) webUrl before running the env tester.";
+
+        var raw = _env.WebUrl.Trim();
+        if (raw.Contains("goes here", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("your-url", StringComparison.OrdinalIgnoreCase) ||
+            raw.Contains("placeholder", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Environment '{_env?.Name}' has a placeholder webUrl ('{raw}'). Configure the real Kinetic URL before running the env tester.";
+        }
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) ||
+            !(uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+              uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"Environment '{_env?.Name}' has an invalid webUrl ('{raw}'). Configure an absolute http(s) URL before running the env tester.";
+        }
+
+        return null;
+    }
+
+    private Uri? TryBuildTokenResourceUri()
+    {
+        if (Uri.TryCreate(_env?.RestApiBaseUrl, UriKind.Absolute, out var restUri))
+        {
+            var apiIndex = restUri.AbsolutePath.IndexOf("/api/", StringComparison.OrdinalIgnoreCase);
+            if (apiIndex >= 0)
+            {
+                var rootPath = restUri.AbsolutePath[..apiIndex].TrimEnd('/');
+                return new Uri($"{restUri.Scheme}://{restUri.Authority}{rootPath}/api/TokenResource/");
+            }
+        }
+
+        if (Uri.TryCreate(_env?.WebUrl, UriKind.Absolute, out var webUri))
+        {
+            var path = webUri.AbsolutePath;
+            var appsIndex = path.IndexOf("/Apps/", StringComparison.OrdinalIgnoreCase);
+            if (appsIndex >= 0)
+                path = path[..appsIndex];
+            path = path.TrimEnd('/');
+            return new Uri($"{webUri.Scheme}://{webUri.Authority}{path}/api/TokenResource/");
+        }
+
+        return null;
+    }
+
+    private static bool ContainsSnapshotFileReference(string? output) =>
+        !string.IsNullOrWhiteSpace(output) &&
+        Regex.IsMatch(output, @"\[\s*Snapshot\s*\]\([^)]+\)", RegexOptions.IgnoreCase);
+
+    private static bool LooksLikeLoginSubmit(string? output) =>
+        !string.IsNullOrWhiteSpace(output) &&
+        (output.Contains("name: 'Log in'", StringComparison.OrdinalIgnoreCase) ||
+         output.Contains("button \"Log in\"", StringComparison.OrdinalIgnoreCase));
+
+    private static bool ContainsPostLoginSignal(string snapshotText) =>
+        snapshotText.Contains("Invalid username or password", StringComparison.OrdinalIgnoreCase) ||
+        snapshotText.Contains("Conversions Pending", StringComparison.OrdinalIgnoreCase) ||
+        snapshotText.Contains("Data Conversion processing", StringComparison.OrdinalIgnoreCase) ||
+        snapshotText.Contains("#/login?", StringComparison.OrdinalIgnoreCase) ||
+        snapshotText.Contains("heading \"Log in\"", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<string> TryCaptureInlineSnapshotAsync(string sessionOpt, string reason)
+    {
+        var snapArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "snapshot";
+        var snapCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {snapArgs}";
+        _report($"({reason}) playwright-cli {snapArgs}");
+        var snapRes = await LocalProcessRunner.RunPowerShellAsync(snapCmd, _screenshotDir, _operationTimeout, _ct);
+        UpdateLastToolState(snapCmd, snapRes);
+        if (snapRes.IsSuccess && !ContainsPlaywrightOutputError(snapRes))
+            return snapRes.ToToolOutput() ?? string.Empty;
+        return string.Empty;
     }
 
     private async Task<string> SaveApiEvidenceAsync(
@@ -823,11 +1556,12 @@ internal sealed class LocalEnvTesterTools : IDisposable
         {
             // snapshot to capture current page state
             (sessionOpt + " snapshot").Trim(),
-            // click Advanced
-            (sessionOpt + " click \"getByRole('button', { name: 'Advanced' })\"").Trim(),
+            // Click Chrome's "Advanced" button — use the stable DOM ID (#details-button) first;
+            // fall back to getByRole in case a non-Chrome browser renders the page differently.
+            (sessionOpt + " click \"#details-button\"").Trim(),
             (sessionOpt + " snapshot").Trim(),
-            // click Proceed (partial text match)
-            (sessionOpt + " click \"getByText('Proceed to')\"").Trim(),
+            // Click "Proceed to <host> (unsafe)" — stable ID is #proceed-link.
+            (sessionOpt + " click \"#proceed-link\"").Trim(),
             (sessionOpt + " snapshot").Trim(),
         };
 
@@ -838,6 +1572,7 @@ internal sealed class LocalEnvTesterTools : IDisposable
                 var cmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {args}";
                 _report($"(SSL-bypass) playwright-cli {args}");
                 var res = await LocalProcessRunner.RunPowerShellAsync(cmd, _screenshotDir, _operationTimeout, _ct);
+                UpdateLastToolState(cmd, res);
                 _report(Limit(res.ToToolOutput(), 8000));
             }
             catch (Exception ex)
@@ -881,6 +1616,7 @@ internal sealed class LocalEnvTesterTools : IDisposable
             var retryCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {retryArgs}";
             _report($"(SSL-bypass) retrying: playwright-cli {retryArgs}");
             var retryRes = await LocalProcessRunner.RunPowerShellAsync(retryCmd, _screenshotDir, _operationTimeout, _ct);
+            UpdateLastToolState(retryCmd, retryRes);
             _report(Limit(retryRes.ToToolOutput(), 12000));
             return retryRes;
         }
@@ -945,8 +1681,9 @@ internal sealed class LocalEnvTesterTools : IDisposable
                 else if (quote == c)
                 {
                     inQuotes = false;
-                    tokens.Add(sb.ToString());
-                    sb.Clear();
+                    // Don't flush the token here — continue building (POSIX shell concatenation:
+                    // 'foo'bar is a single token "foobar"). This preserves CSS attribute selectors
+                    // like input[name='username'] as a single token instead of splitting at the quote.
                     continue;
                 }
             }
@@ -1052,20 +1789,89 @@ internal sealed class LocalEnvTesterTools : IDisposable
         }
     }
 
+    /// <summary>
+    /// Pre-writes <c>.playwright/cli.config.json</c> in the working directory when
+    /// <see cref="PlaywrightOptions.IgnoreHttpsErrors"/> is enabled.  playwright-cli loads
+    /// this config automatically (the --config default) so SSL errors are bypassed without
+    /// any unsupported command-line flags on <c>open</c>.
+    /// </summary>
+    private async Task EnsurePlaywrightConfigAsync()
+    {
+        if (_opts?.IgnoreHttpsErrors != true) return;
+        try
+        {
+            var configDir = Path.Combine(_screenshotDir, ".playwright");
+            Directory.CreateDirectory(configDir);
+            var configPath = Path.Combine(configDir, "cli.config.json");
+            if (!File.Exists(configPath))
+            {
+                await File.WriteAllTextAsync(configPath,
+                    """{"use":{"ignoreHTTPSErrors":true}}""", _ct);
+                _log.Debug("[{Env}] Wrote playwright config with ignoreHTTPSErrors=true to {Path}",
+                    _env?.Name, configPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(ex, "[{Env}] Could not write playwright config file", _env?.Name);
+        }
+    }
+
     private async Task EnsureBrowserSessionOpenAsync(string sessionOption)
     {
         try
         {
-            // Open a browser session without supplying a custom profile path.
-            // Prefix the session option before the command so allowed-roots are scoped correctly.
+            // Pre-write playwright config for SSL bypass before each open.
+            await EnsurePlaywrightConfigAsync();
+
             var sessionOpt = SessionOptionOrDefault(sessionOption);
-            var ignoreFlag = (_opts?.IgnoreHttpsErrors == true && _supportsIgnoreHttps) ? " --ignore-https-errors" : string.Empty;
-            var openArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "open" + ignoreFlag;
+
+            // Navigate directly to the environment URL (not about:blank) so that any
+            // immediate fill/click after auto-open lands on the actual page, not a blank tab.
+            var targetUrl = _env?.WebUrl ?? string.Empty;
+            var openArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") +
+                            "open" +
+                            (string.IsNullOrWhiteSpace(targetUrl) ? string.Empty : " " + targetUrl);
 
             var cmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {openArgs}";
             _report($"(session-open) playwright-cli {openArgs}");
             var res = await LocalProcessRunner.RunPowerShellAsync(cmd, _screenshotDir, _operationTimeout, _ct);
+            UpdateLastToolState(cmd, res);
             _report(Limit(res.ToToolOutput(), 10000));
+
+            // When a URL was opened, take a live snapshot and auto-bypass any SSL interstitial.
+            if (res.IsSuccess && !string.IsNullOrWhiteSpace(targetUrl))
+            {
+                try
+                {
+                    var snapArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + "snapshot";
+                    var snapCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {snapArgs}";
+                    var snapRes = await LocalProcessRunner.RunPowerShellAsync(snapCmd, _screenshotDir, _operationTimeout, _ct);
+                    var snapText = snapRes.IsSuccess ? (snapRes.ToToolOutput() ?? string.Empty) : string.Empty;
+
+                    if (snapText.Contains("chrome-error://", StringComparison.OrdinalIgnoreCase) ||
+                        snapText.Contains("ERR_CERT", StringComparison.OrdinalIgnoreCase) ||
+                        snapText.Contains("Your connection is not private", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _report("(session-open ssl-bypass) SSL interstitial detected — clicking #details-button then #proceed-link");
+                        foreach (var step in new[] { "click \"#details-button\"", "snapshot", "click \"#proceed-link\"", "snapshot" })
+                        {
+                            var bArgs = (string.IsNullOrWhiteSpace(sessionOpt) ? string.Empty : sessionOpt + " ") + step;
+                            var bCmd = $"$ErrorActionPreference = 'Continue'; playwright-cli {bArgs}";
+                            _report($"(session-open ssl-bypass) playwright-cli {bArgs}");
+                            try
+                            {
+                                await LocalProcessRunner.RunPowerShellAsync(bCmd, _screenshotDir, _operationTimeout, _ct);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _report($"(session-open post-snapshot) failed: {ex.Message}");
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -1086,13 +1892,16 @@ internal sealed class LocalEnvTesterTools : IDisposable
         {
             var helpCmd = "$ErrorActionPreference = 'Continue'; playwright-cli --help";
             _report("(help) playwright-cli --help");
-            var res = await LocalProcessRunner.RunPowerShellAsync(helpCmd, _screenshotDir, _operationTimeout, _ct);
+            string executedHelpCmd = helpCmd;
+            var res = await LocalProcessRunner.RunPowerShellAsync(executedHelpCmd, _screenshotDir, _operationTimeout, _ct);
             if (LooksLikeCommandMissing(res))
             {
-                var fallback = "$ErrorActionPreference = 'Continue'; npx playwright-cli --help";
+                executedHelpCmd = "$ErrorActionPreference = 'Continue'; npx playwright-cli --help";
                 _report("(help) npx playwright-cli --help");
-                res = await LocalProcessRunner.RunPowerShellAsync(fallback, _screenshotDir, _operationTimeout, _ct);
+                res = await LocalProcessRunner.RunPowerShellAsync(executedHelpCmd, _screenshotDir, _operationTimeout, _ct);
             }
+
+            UpdateLastToolState(executedHelpCmd, res);
 
             var combined = res.StandardOutput + "\n" + res.StandardError;
 
@@ -1142,6 +1951,7 @@ internal sealed class LocalEnvTesterTools : IDisposable
             var cmd = "$ErrorActionPreference = 'Continue'; playwright-cli close";
             _report("(session-close) playwright-cli close");
             var res = await LocalProcessRunner.RunPowerShellAsync(cmd, _screenshotDir, _operationTimeout, _ct);
+            UpdateLastToolState(cmd, res);
             _report(Limit(res.ToToolOutput(), 8000));
 
             await _sessionLock.WaitAsync(_ct).ConfigureAwait(false);

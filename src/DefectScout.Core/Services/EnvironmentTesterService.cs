@@ -176,7 +176,7 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         IProgress<EnvironmentProgress>? progress,
         CancellationToken ct)
     {
-        Directory.CreateDirectory(screenshotDir);
+        PrepareRunArtifacts(screenshotDir, resultFile);
 
         var prog = new EnvironmentProgress
         {
@@ -195,13 +195,22 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             progress?.Report(prog);
         }
 
-        if (File.Exists(resultFile)) File.Delete(resultFile);
-
         _log.Information("Starting SDK session for {Env} (v{Version})", env.Name, env.Version);
         Report($"Connecting Copilot SDK for {env.Name}...");
 
         try
         {
+            using (var probeTools = new LocalEnvTesterTools(
+                       env, screenshotDir, resultFile, opts, opts.TimeoutDuration, Report, ct))
+            {
+                var browserLoginProbeError = await probeTools.ProbeBrowserLoginFailureAsync();
+                if (!string.IsNullOrWhiteSpace(browserLoginProbeError))
+                {
+                    Report(browserLoginProbeError);
+                    return BuildErrorResult(env, browserLoginProbeError);
+                }
+            }
+
             await using var session = await client.CreateSessionAsync(new SessionConfig
             {
                 Model = "claude-sonnet-4.6",
@@ -349,7 +358,15 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         AgentRuntimeOptions runtime,
         CancellationToken ct)
     {
-        var maxConcurrent = Math.Clamp(runtime.MaxConcurrentEnvTesters, 1, Math.Max(1, environments.Count));
+        var requestedConcurrent = Math.Clamp(runtime.MaxConcurrentEnvTesters, 1, Math.Max(1, environments.Count));
+        var maxConcurrent = requestedConcurrent > 1 ? 1 : requestedConcurrent;
+        if (requestedConcurrent > 1)
+        {
+            _log.Warning(
+                "Local Ollama dispatch requested {Requested} concurrent env testers for model {Model}; forcing sequential execution to reduce model contention and improve tool-use accuracy.",
+                requestedConcurrent,
+                runtime.EnvTesterModel);
+        }
         _log.Information("Local Ollama dispatch: {Count} environments, maxConcurrent={Max}, model={Model}",
             environments.Count, maxConcurrent, runtime.EnvTesterModel);
 
@@ -398,7 +415,7 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         IProgress<EnvironmentProgress>? progress,
         CancellationToken ct)
     {
-        Directory.CreateDirectory(screenshotDir);
+        PrepareRunArtifacts(screenshotDir, resultFile);
 
         var prog = new EnvironmentProgress
         {
@@ -445,8 +462,6 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             return sanitized;
         }
 
-        if (File.Exists(resultFile)) File.Delete(resultFile);
-
         _log.Information("Starting local Ollama env tester for {Env} (v{Version})",
             env.Name, env.Version);
         Report($"Connecting local Ollama tester to {runtime.OllamaEndpoint} using {runtime.EnvTesterModel}...");
@@ -457,6 +472,13 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
             Report($"Operation timeout: {(int)operationTimeout.TotalMilliseconds:N0} ms");
             using var toolsHost = new LocalEnvTesterTools(
                 env, screenshotDir, resultFile, opts, operationTimeout, Report, ct);
+
+            var browserLoginProbeError = await toolsHost.ProbeBrowserLoginFailureAsync();
+            if (!string.IsNullOrWhiteSpace(browserLoginProbeError))
+            {
+                Report(browserLoginProbeError);
+                return BuildErrorResult(env, browserLoginProbeError);
+            }
 
             using var ollama = LocalOllamaClientFactory.Create(
                 runtime.OllamaEndpoint,
@@ -480,7 +502,8 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
                 runtime,
                 runtime.EnvTesterModel,
                 localMaxOutput,
-                tools);
+                tools,
+                purpose: LocalOllamaOptionsFactory.PurposeEnvTester);
             var prompt = AgentPrompts.BuildLocalEnvTesterPrompt(plan, env, screenshotDir, resultFile, opts);
             var messages = new[]
             {
@@ -488,14 +511,14 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
                 new ChatMessage(ChatRole.User, prompt),
             };
 
-            Report($"Ollama options: {LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput)}");
+            Report($"Ollama options: {LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput, LocalOllamaOptionsFactory.PurposeEnvTester)}");
             _log.Information(
                 "[{Env}] Local Ollama request starting: model={Model}, promptChars={PromptChars}, tools={ToolCount}, {Options}",
                 env.Name,
                 runtime.EnvTesterModel,
                 prompt.Length,
                 tools.Count,
-                LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput));
+                LocalOllamaOptionsFactory.Describe(runtime, runtime.EnvTesterModel, localMaxOutput, LocalOllamaOptionsFactory.PurposeEnvTester));
 
             var stopwatch = Stopwatch.StartNew();
             var response = await AwaitWithHeartbeatAsync(
@@ -659,6 +682,44 @@ public sealed class EnvironmentTesterService : IEnvironmentTesterService
         catch
         {
             // The caller will surface the missing result file as an ERROR TestResult.
+        }
+    }
+
+    private static void PrepareRunArtifacts(string screenshotDir, string resultFile)
+    {
+        TryDeleteDirectory(screenshotDir);
+        Directory.CreateDirectory(screenshotDir);
+
+        var resultDir = Path.GetDirectoryName(resultFile);
+        if (!string.IsNullOrWhiteSpace(resultDir))
+            Directory.CreateDirectory(resultDir);
+
+        if (File.Exists(resultFile))
+            File.Delete(resultFile);
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+            return;
+
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                File.SetAttributes(file, FileAttributes.Normal);
+        }
+        catch
+        {
+            // Best effort only.
+        }
+
+        try
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // If any file is locked from a prior crashed run, continue with best-effort cleanup.
         }
     }
 

@@ -7,11 +7,16 @@ namespace DefectScout.Core.Services;
 
 internal static class LocalOllamaOptionsFactory
 {
+    // Purpose constants for explicit think-setting selection.
+    public const string PurposeStepExtractor = "stepExtractor";
+    public const string PurposeEnvTester     = "envTester";
+
     public static ChatOptions Create(
         AgentRuntimeOptions runtime,
         string model,
         int requestedMaxOutputTokens,
-        IList<AITool>? tools = null)
+        IList<AITool>? tools = null,
+        string? purpose = null)
     {
         var contextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(runtime.OllamaContextTokens);
         var outputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(requestedMaxOutputTokens);
@@ -32,17 +37,21 @@ internal static class LocalOllamaOptionsFactory
         options.AddOllamaOption(OllamaOption.Temperature, 0.1f);
         options.AddOllamaOption(OllamaOption.TopP, 0.8f);
 
-        // Determine the effective "think" setting for this model. Support per-purpose
-        // settings: step-extractor and env-tester can have their own configured levels.
+        // Determine the effective "think" setting for this model. When an explicit
+        // purpose is supplied it takes precedence — this avoids the ambiguity where
+        // StepExtractorModel and EnvTesterModel are the same model name, which would
+        // cause the step-extractor check to always win.
         var modelName = NormalizeModelName(model);
         var stepModelName = NormalizeModelName(runtime.StepExtractorModel);
         var envModelName = NormalizeModelName(runtime.EnvTesterModel);
 
-        var thinkSource = string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
-            ? runtime.OllamaThinkStepExtractor
-            : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
-                ? runtime.OllamaThinkEnvTester
-                : runtime.OllamaThink;
+        var thinkSource = purpose == PurposeStepExtractor ? runtime.OllamaThinkStepExtractor
+            : purpose == PurposeEnvTester               ? runtime.OllamaThinkEnvTester
+            : string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
+                ? runtime.OllamaThinkStepExtractor
+                : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
+                    ? runtime.OllamaThinkEnvTester
+                    : runtime.OllamaThink;
 
         var think = AgentRuntimeOptions.NormalizeOllamaThink(thinkSource);
         if (think != "off" && SupportsThinking(model))
@@ -55,7 +64,7 @@ internal static class LocalOllamaOptionsFactory
         return options;
     }
 
-    public static string Describe(AgentRuntimeOptions runtime, string model, int requestedMaxOutputTokens)
+    public static string Describe(AgentRuntimeOptions runtime, string model, int requestedMaxOutputTokens, string? purpose = null)
     {
         var contextTokens = AgentRuntimeOptions.NormalizeOllamaContextTokens(runtime.OllamaContextTokens);
         var outputTokens = AgentRuntimeOptions.NormalizeOllamaMaxOutputTokens(requestedMaxOutputTokens);
@@ -63,11 +72,13 @@ internal static class LocalOllamaOptionsFactory
         var stepModelName = NormalizeModelName(runtime.StepExtractorModel);
         var envModelName = NormalizeModelName(runtime.EnvTesterModel);
 
-        var thinkSource = string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
-            ? runtime.OllamaThinkStepExtractor
-            : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
-                ? runtime.OllamaThinkEnvTester
-                : runtime.OllamaThink;
+        var thinkSource = purpose == PurposeStepExtractor ? runtime.OllamaThinkStepExtractor
+            : purpose == PurposeEnvTester               ? runtime.OllamaThinkEnvTester
+            : string.Equals(modelName, stepModelName, StringComparison.OrdinalIgnoreCase)
+                ? runtime.OllamaThinkStepExtractor
+                : string.Equals(modelName, envModelName, StringComparison.OrdinalIgnoreCase)
+                    ? runtime.OllamaThinkEnvTester
+                    : runtime.OllamaThink;
 
         var think = AgentRuntimeOptions.NormalizeOllamaThink(thinkSource);
         var effectiveThink = think == "off" || !SupportsThinking(model)

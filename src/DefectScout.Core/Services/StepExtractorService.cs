@@ -173,7 +173,7 @@ public sealed class StepExtractorService : IStepExtractorService
         progress?.Report($"Connecting to Ollama at {runtime.OllamaEndpoint}...\n");
         progress?.Report($"Using local extraction model: {runtime.StepExtractorModel}\n");
         progress?.Report($"Operation timeout: {(int)operationTimeout.TotalMilliseconds:N0} ms\n");
-        progress?.Report($"Ollama options: {LocalOllamaOptionsFactory.Describe(runtime, runtime.StepExtractorModel, runtime.OllamaMaxOutputTokens)}\n");
+        progress?.Report($"Ollama options: {LocalOllamaOptionsFactory.Describe(runtime, runtime.StepExtractorModel, runtime.OllamaMaxOutputTokens, LocalOllamaOptionsFactory.PurposeStepExtractor)}\n");
 
         using var ollama = LocalOllamaClientFactory.Create(
             runtime.OllamaEndpoint,
@@ -188,7 +188,8 @@ public sealed class StepExtractorService : IStepExtractorService
         var options = LocalOllamaOptionsFactory.Create(
             runtime,
             runtime.StepExtractorModel,
-            runtime.OllamaMaxOutputTokens);
+            runtime.OllamaMaxOutputTokens,
+            purpose: LocalOllamaOptionsFactory.PurposeStepExtractor);
 
         progress?.Report("Analysing ticket locally...\n");
         string responseText;
